@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#071d2d" />
+    <meta name="description" content="대항해시대의 바다를 탐험하는 3D 항해 어드벤처 게임" />
+    <title>Ocean Voyager 3D — 미지의 해역</title>
+  </head>
+  <body>
+    <main id="game" aria-label="3D 항해 게임">
+      <canvas id="scene" aria-label="대항해시대 3D 바다 장면"></canvas>
+
+      <section class="hud" aria-label="항해 정보">
+        <div class="brand">
+          <span class="eyebrow">OCEAN VOYAGER III</span>
+          <strong>미지의 해역</strong>
+        </div>
+        <div class="stats">
+          <div><span>선체</span><strong id="health">100</strong><i class="bar"><b id="health-bar"></b></i></div>
+          <div><span>보물</span><strong><em id="treasure">0</em> / 5</strong></div>
+          <div><span>항해 점수</span><strong id="score">0000</strong></div>
+        </div>
+      </section>
+
+      <aside class="compass" aria-label="나침반">
+        <span>N</span><div id="needle"></div><small id="heading">000°</small>
+      </aside>
+
+      <section class="mission" id="mission" aria-live="polite">
+        <span>현재 임무</span>
+        <strong id="mission-title">잃어버린 왕관의 보물 5개를 찾으십시오</strong>
+        <p id="mission-detail">빛나는 섬 가까이 항해하면 보물을 발견할 수 있습니다.</p>
+      </section>
+
+      <div class="danger" id="danger" aria-live="assertive"></div>
+
+      <section class="start-screen" id="start-screen">
+        <div class="start-card">
+          <span class="eyebrow">THE AGE OF DISCOVERY</span>
+          <h1>미지의 해역</h1>
+          <p>폭풍과 해적선을 피해 다섯 섬의 보물을 찾아 왕실 항구로 귀환하십시오.</p>
+          <div class="controls-guide">
+            <div><kbd>W</kbd><kbd>↑</kbd><span>전진</span></div>
+            <div><kbd>A</kbd><kbd>D</kbd><span>방향 전환</span></div>
+            <div><kbd>S</kbd><kbd>↓</kbd><span>감속 / 후진</span></div>
+            <div><kbd>Space</kbd><span>대포 발사</span></div>
+          </div>
+          <button id="start-button">출항하기</button>
+          <small>키보드 또는 화면 버튼으로 플레이할 수 있습니다.</small>
+        </div>
+      </section>
+
+      <section class="end-screen hidden" id="end-screen" aria-live="assertive">
+        <div class="start-card">
+          <span class="eyebrow" id="end-kicker">VOYAGE COMPLETE</span>
+          <h2 id="end-title">전설의 항해자</h2>
+          <p id="end-message"></p>
+          <button id="restart-button">다시 항해하기</button>
+        </div>
+      </section>
+
+      <nav class="touch-controls" aria-label="터치 조작">
+        <div class="steer">
+          <button data-key="ArrowLeft" aria-label="왼쪽으로 회전">◀</button>
+          <button data-key="ArrowRight" aria-label="오른쪽으로 회전">▶</button>
+        </div>
+        <div class="throttle">
+          <button data-key="ArrowUp" aria-label="전진">▲</button>
+          <button data-key="ArrowDown" aria-label="감속">▼</button>
+        </div>
+        <button class="fire" data-key="Space" aria-label="대포 발사">FIRE</button>
+      </nav>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
