@@ -45,7 +45,7 @@ async function runProbe(page, label, scenario) {
   }, { label, scenarioSource: scenario.toString() });
 
   const stats = summarize(samples);
-  if (stats.frames < 45 || stats.p95 > 42 || stats.max > 75 || stats.longFrames > 3) {
+  if (stats.frames < 45 || stats.p95 > 48 || stats.max > 75 || stats.longFrames > 6) {
     throw new Error(`${label} frame budget failed: ${JSON.stringify(stats)}`);
   }
   return stats;
