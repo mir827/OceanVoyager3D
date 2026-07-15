@@ -278,25 +278,29 @@ function scheduleMusic() {
   const playPhrase = () => {
     if (!game.started || game.ended) return;
     const root = melody[step % melody.length];
-    playTone(root, 0.55, 0.025, 'triangle');
-    playTone(root / 2, 0.9, 0.018, 'sine');
-    if (step % 4 === 0) playTone(root * 1.5, 0.35, 0.012, 'triangle', 0.15);
+    playTone(root, 0.55, 0.075, 'triangle');
+    playTone(root / 2, 0.9, 0.05, 'sine');
+    if (step % 4 === 0) playTone(root * 1.5, 0.35, 0.035, 'triangle', 0.15);
     step += 1;
   };
   playPhrase();
   musicTimer = window.setInterval(playPhrase, 650);
 }
 
-function startAudio() {
+async function startAudio() {
   audioContext ??= new AudioContext();
   musicGain ??= audioContext.createGain();
   if (!musicGain.__connected) {
-    musicGain.gain.value = 0.8;
+    musicGain.gain.value = 1;
     musicGain.connect(audioContext.destination);
     musicGain.__connected = true;
   }
-  audioContext.resume();
+  if (audioContext.state !== 'running') await audioContext.resume();
   scheduleMusic();
+  const button = document.querySelector('#audio-toggle');
+  button.textContent = '♫';
+  button.classList.remove('muted');
+  button.setAttribute('aria-label', '배경 음악 끄기');
 }
 
 function playCannonSound() {
@@ -400,12 +404,13 @@ function updatePlayer(dt, time) {
   const left = keys.has('KeyA') || keys.has('ArrowLeft');
   const right = keys.has('KeyD') || keys.has('ArrowRight');
   const keyboardTurn = (left ? 1 : 0) - (right ? 1 : 0);
-  const turn = joystick.active ? -joystick.x : keyboardTurn;
-  const throttle = joystick.active ? -joystick.y : (forward ? 1 : reverse ? -1 : 0);
-  const acceleration = throttle > 0.08 ? 6.2 * throttle : throttle < -0.08 ? 7 * throttle : -Math.sign(game.speed) * 1.3;
+  const shapeInput = (value) => Math.sign(value) * Math.min(1, Math.max(0, (Math.abs(value) - 0.025) / 0.975) ** 0.72);
+  const turn = joystick.active ? -shapeInput(joystick.x) : keyboardTurn;
+  const throttle = joystick.active ? -shapeInput(joystick.y) : (forward ? 1 : reverse ? -1 : 0);
+  const acceleration = throttle > 0.025 ? 15 * throttle : throttle < -0.025 ? 12 * throttle : -Math.sign(game.speed) * 2.2;
   game.speed = THREE.MathUtils.clamp(game.speed + acceleration * dt, -3.2, 11.5);
-  if (Math.abs(throttle) <= 0.08 && Math.abs(game.speed) < 0.12) game.speed = 0;
-  game.heading += turn * dt * (0.55 + Math.abs(game.speed) * 0.035) * (game.speed >= 0 ? 1 : -1);
+  if (Math.abs(throttle) <= 0.025 && Math.abs(game.speed) < 0.12) game.speed = 0;
+  game.heading += turn * dt * (1.35 + Math.abs(game.speed) * 0.045) * (game.speed >= 0 ? 1 : -1);
   player.rotation.y = game.heading;
   const direction = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), game.heading);
   player.position.addScaledVector(direction, game.speed * dt);
@@ -579,7 +584,7 @@ function resetGame() {
   document.querySelector('#start-screen').classList.add('hidden');
   document.querySelector('#end-screen').classList.add('hidden');
   showDanger('돛을 올려라 — 항해 시작!');
-  startAudio();
+  startAudio().catch(() => showDanger('소리 버튼을 눌러 음악을 시작하세요'));
 }
 
 document.querySelector('#start-button').addEventListener('click', resetGame);
@@ -644,7 +649,7 @@ document.querySelector('#audio-toggle').addEventListener('click', () => {
   button.textContent = musicMuted ? '♩' : '♫';
   button.setAttribute('aria-pressed', String(musicMuted));
   button.setAttribute('aria-label', musicMuted ? '배경 음악 켜기' : '배경 음악 끄기');
-  if (!musicMuted) startAudio();
+  if (!musicMuted) startAudio().catch(() => {});
 });
 
 function resize() {
@@ -662,5 +667,5 @@ animate();
 
 window.__oceanVoyager = {
   game, player, islands, enemies, items, cannonballs, joystick, resetGame, fireCannon,
-  get audio() { return { context: audioContext?.state ?? 'not-started', muted: musicMuted, active: Boolean(musicTimer) }; },
+  get audio() { return { context: audioContext?.state ?? 'not-started', muted: musicMuted, active: Boolean(musicTimer), gain: musicGain?.gain.value ?? 0 }; },
 };

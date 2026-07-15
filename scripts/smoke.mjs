@@ -42,7 +42,7 @@ try {
     cannonballs: window.__oceanVoyager.cannonballs.filter((ball) => !ball.hostile).length,
     audio: window.__oceanVoyager.audio,
   }));
-  if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active) {
+  if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active || after.audio.context !== 'running' || after.audio.gain < 0.9) {
     throw new Error(`Gameplay input failed: ${JSON.stringify({ before, after })}`);
   }
 
@@ -63,11 +63,19 @@ try {
   await page.mouse.move(joystickBox.x + joystickBox.width / 2, joystickBox.y + joystickBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(joystickBox.x + joystickBox.width / 2 + 34, joystickBox.y + joystickBox.height / 2 - 42, { steps: 5 });
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const joystickState = await page.evaluate(() => ({ ...window.__oceanVoyager.joystick }));
+  const motionBefore = await page.evaluate(() => ({ heading: window.__oceanVoyager.game.heading, speed: window.__oceanVoyager.game.speed }));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const joystickState = await page.evaluate(() => ({
+    ...window.__oceanVoyager.joystick,
+    heading: window.__oceanVoyager.game.heading,
+    speed: window.__oceanVoyager.game.speed,
+  }));
   await page.mouse.up();
   if (!joystickState.active || joystickState.x < 0.3 || joystickState.y > -0.3) {
     throw new Error(`Joystick drag failed: ${JSON.stringify(joystickState)}`);
+  }
+  if (Math.abs(joystickState.heading - motionBefore.heading) < 0.12 || joystickState.speed <= motionBefore.speed) {
+    throw new Error(`Joystick response too slow: ${JSON.stringify({ motionBefore, joystickState })}`);
   }
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
 
