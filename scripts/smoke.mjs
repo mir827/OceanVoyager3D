@@ -19,9 +19,11 @@ try {
     z: window.__oceanVoyager.player.position.z,
     islands: window.__oceanVoyager.islands.length,
     enemies: window.__oceanVoyager.enemies.length,
+    items: window.__oceanVoyager.items.length,
+    shipScale: window.__oceanVoyager.player.scale.x,
     canvasWidth: document.querySelector('#scene').clientWidth,
   }));
-  if (before.started || before.islands !== 5 || before.enemies !== 3 || before.canvasWidth < 1000) {
+  if (before.started || before.islands !== 5 || before.enemies < 6 || before.items < 12 || before.shipScale >= 0.8 || before.canvasWidth < 1000) {
     throw new Error(`Invalid initial state: ${JSON.stringify(before)}`);
   }
 
@@ -30,15 +32,17 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 900));
   await page.keyboard.up('KeyW');
   await page.keyboard.press('Space');
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await new Promise((resolve) => setTimeout(resolve, 80));
 
   const after = await page.evaluate(() => ({
     started: window.__oceanVoyager.game.started,
     z: window.__oceanVoyager.player.position.z,
     health: window.__oceanVoyager.game.health,
     startHidden: document.querySelector('#start-screen').classList.contains('hidden'),
+    cannonballs: window.__oceanVoyager.cannonballs.filter((ball) => !ball.hostile).length,
+    audio: window.__oceanVoyager.audio,
   }));
-  if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0) {
+  if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active) {
     throw new Error(`Gameplay input failed: ${JSON.stringify({ before, after })}`);
   }
 
@@ -48,13 +52,26 @@ try {
     touchDisplay: getComputedStyle(document.querySelector('.touch-controls')).display,
     width: document.documentElement.scrollWidth,
     viewport: window.innerWidth,
+    joystickDisplay: getComputedStyle(document.querySelector('#joystick')).display,
   }));
   if (mobile.touchDisplay === 'none' || mobile.width > mobile.viewport) {
     throw new Error(`Mobile layout failed: ${JSON.stringify(mobile)}`);
   }
+
+  const joystickHandle = await page.$('#joystick');
+  const joystickBox = await joystickHandle.boundingBox();
+  await page.mouse.move(joystickBox.x + joystickBox.width / 2, joystickBox.y + joystickBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(joystickBox.x + joystickBox.width / 2 + 34, joystickBox.y + joystickBox.height / 2 - 42, { steps: 5 });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const joystickState = await page.evaluate(() => ({ ...window.__oceanVoyager.joystick }));
+  await page.mouse.up();
+  if (!joystickState.active || joystickState.x < 0.3 || joystickState.y > -0.3) {
+    throw new Error(`Joystick drag failed: ${JSON.stringify(joystickState)}`);
+  }
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
 
-  console.log(JSON.stringify({ initial: before, gameplay: after, mobile }, null, 2));
+  console.log(JSON.stringify({ initial: before, gameplay: after, mobile, joystick: joystickState }, null, 2));
 } finally {
   await browser.close();
 }

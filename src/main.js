@@ -36,6 +36,7 @@ const game = {
   health: 100,
   treasures: 0,
   score: 0,
+  supplies: 0,
   time: 0,
   cannonCooldown: 0,
   hitCooldown: 0,
@@ -47,6 +48,12 @@ const enemies = [];
 const cannonballs = [];
 const particles = [];
 const storms = [];
+const items = [];
+const joystick = { x: 0, y: 0, active: false, pointerId: null };
+let audioContext;
+let musicGain;
+let musicTimer;
+let musicMuted = false;
 
 const oceanGeo = new THREE.PlaneGeometry(650, 650, 128, 128);
 oceanGeo.rotateX(-Math.PI / 2);
@@ -115,7 +122,7 @@ function createShip({ pirate = false, scale = 1 } = {}) {
   return ship;
 }
 
-const player = createShip();
+const player = createShip({ scale: 0.55 });
 player.position.set(0, 0.25, 32);
 scene.add(player);
 
@@ -181,11 +188,45 @@ function createEnemy(x, z, phase) {
   const ship = createShip({ pirate: true, scale: 0.72 });
   ship.position.set(x, 0.18, z);
   scene.add(ship);
-  enemies.push({ ship, phase, health: 3, fireCooldown: 1.5 + phase, active: true });
+  enemies.push({ ship, phase, health: 3, fireCooldown: 1.5 + phase, active: true, spawn: new THREE.Vector3(x, 0.18, z) });
 }
 createEnemy(-28, -72, 0.4);
 createEnemy(62, 62, 2.1);
 createEnemy(-92, 8, 4.4);
+createEnemy(96, -42, 1.2);
+createEnemy(-45, 98, 3.3);
+createEnemy(18, -125, 5.1);
+
+function createMapItem(type, x, z, phase) {
+  const group = new THREE.Group();
+  const colors = { repair: 0x63d7b0, rum: 0xe3a14b, chart: 0x79c8f2, powder: 0xf06f55 };
+  const glow = colors[type];
+  if (type === 'repair') {
+    mesh(new THREE.BoxGeometry(1.8, 1.4, 1.8), material(0x9b6b3f), group, [0, 0, 0]);
+    mesh(new THREE.BoxGeometry(0.35, 1.7, 0.35), material(0xe6eee7), group, [0, 0.9, 0]);
+    mesh(new THREE.BoxGeometry(1.7, 0.35, 0.35), material(0xe6eee7), group, [0, 0.9, 0]);
+  } else if (type === 'rum') {
+    mesh(new THREE.CylinderGeometry(0.9, 0.9, 1.8, 10), material(0x85512f), group);
+    mesh(new THREE.TorusGeometry(0.92, 0.08, 6, 16), material(0xd8b36b), group, [0, 0.45, 0], [Math.PI / 2, 0, 0]);
+  } else if (type === 'chart') {
+    mesh(new THREE.PlaneGeometry(2.2, 1.6), material(0xe8d29b), group, [0, 0, 0], [-Math.PI / 2, 0, 0]);
+  } else {
+    mesh(new THREE.SphereGeometry(0.85, 12, 12), material(0x24292e), group);
+    mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.7, 6), material(0xe2a24a), group, [0, 0.9, 0], [0.2, 0, 0.2]);
+  }
+  const light = new THREE.PointLight(glow, 11, 16, 2);
+  light.position.y = 2;
+  group.add(light);
+  group.position.set(x, 2.2, z);
+  scene.add(group);
+  items.push({ type, group, phase, collected: false, spawn: new THREE.Vector3(x, 2.2, z) });
+}
+
+[
+  ['repair', -18, -48], ['rum', 32, -36], ['chart', 72, -92], ['powder', -82, -72],
+  ['repair', 95, 72], ['rum', -104, 28], ['chart', -42, 82], ['powder', 24, -112],
+  ['repair', 54, 8], ['rum', -8, 92], ['chart', 112, -12], ['powder', -65, 10],
+].forEach(([type, x, z], index) => createMapItem(type, x, z, index * 0.7));
 
 function createStorm(x, z, radius) {
   const cloud = new THREE.Group();
@@ -215,13 +256,88 @@ function spawnSplash(position, color = 0xbcecff, count = 10) {
   }
 }
 
+function playTone(frequency, duration, volume = 0.035, type = 'sine', delay = 0) {
+  if (!audioContext || musicMuted) return;
+  const start = audioContext.currentTime + delay;
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, start);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(volume, start + 0.03);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  oscillator.connect(gain).connect(musicGain);
+  oscillator.start(start);
+  oscillator.stop(start + duration + 0.05);
+}
+
+function scheduleMusic() {
+  if (!audioContext || musicTimer) return;
+  const melody = [220, 277.18, 329.63, 293.66, 246.94, 329.63, 369.99, 293.66];
+  let step = 0;
+  const playPhrase = () => {
+    if (!game.started || game.ended) return;
+    const root = melody[step % melody.length];
+    playTone(root, 0.55, 0.025, 'triangle');
+    playTone(root / 2, 0.9, 0.018, 'sine');
+    if (step % 4 === 0) playTone(root * 1.5, 0.35, 0.012, 'triangle', 0.15);
+    step += 1;
+  };
+  playPhrase();
+  musicTimer = window.setInterval(playPhrase, 650);
+}
+
+function startAudio() {
+  audioContext ??= new AudioContext();
+  musicGain ??= audioContext.createGain();
+  if (!musicGain.__connected) {
+    musicGain.gain.value = 0.8;
+    musicGain.connect(audioContext.destination);
+    musicGain.__connected = true;
+  }
+  audioContext.resume();
+  scheduleMusic();
+}
+
+function playCannonSound() {
+  if (!audioContext || musicMuted) return;
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  oscillator.type = 'sawtooth';
+  oscillator.frequency.setValueAtTime(90, audioContext.currentTime);
+  oscillator.frequency.exponentialRampToValueAtTime(30, audioContext.currentTime + 0.22);
+  gain.gain.setValueAtTime(0.11, audioContext.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.24);
+  oscillator.connect(gain).connect(audioContext.destination);
+  oscillator.start();
+  oscillator.stop(audioContext.currentTime + 0.25);
+}
+
 function fireCannon(owner, hostile = false) {
-  if (owner === player && game.cannonCooldown > 0) return;
+  if (owner === player && (!game.started || game.ended || game.cannonCooldown > 0)) return false;
   const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(owner.quaternion).normalize();
   const ball = mesh(new THREE.SphereGeometry(0.26, 8, 8), material(hostile ? 0xd6442f : 0x292929, 0.2), scene);
   ball.position.copy(owner.position).addScaledVector(direction, 5).add(new THREE.Vector3(0, 2.2, 0));
   cannonballs.push({ object: ball, velocity: direction.multiplyScalar(hostile ? 25 : 34), hostile, life: 4 });
-  if (owner === player) game.cannonCooldown = 0.75;
+  if (owner === player) {
+    game.cannonCooldown = game.supplies > 0 ? 0.42 : 0.65;
+    playCannonSound();
+    spawnSplash(ball.position, 0xffa34e, 8);
+  }
+  return true;
+}
+
+function collectItem(item) {
+  item.collected = true;
+  item.group.visible = false;
+  const effects = {
+    repair: () => { game.health = Math.min(100, game.health + 28); showDanger('수리 키트 — 선체 회복!'); },
+    rum: () => { game.score += 300; showDanger('럼주 보급 — 항해 점수 +300'); },
+    chart: () => { game.score += 450; showDanger('비밀 해도 — 항로 발견!'); },
+    powder: () => { game.supplies += 1; showDanger('화약 상자 — 대포 재장전 강화!'); },
+  };
+  effects[item.type]();
+  spawnSplash(item.group.position, 0xffd36b, 18);
 }
 
 function damage(amount, message) {
@@ -283,10 +399,12 @@ function updatePlayer(dt, time) {
   const reverse = keys.has('KeyS') || keys.has('ArrowDown');
   const left = keys.has('KeyA') || keys.has('ArrowLeft');
   const right = keys.has('KeyD') || keys.has('ArrowRight');
-  const turn = (left ? 1 : 0) - (right ? 1 : 0);
-  const acceleration = forward ? 6.2 : reverse ? -7 : -Math.sign(game.speed) * 1.3;
+  const keyboardTurn = (left ? 1 : 0) - (right ? 1 : 0);
+  const turn = joystick.active ? -joystick.x : keyboardTurn;
+  const throttle = joystick.active ? -joystick.y : (forward ? 1 : reverse ? -1 : 0);
+  const acceleration = throttle > 0.08 ? 6.2 * throttle : throttle < -0.08 ? 7 * throttle : -Math.sign(game.speed) * 1.3;
   game.speed = THREE.MathUtils.clamp(game.speed + acceleration * dt, -3.2, 11.5);
-  if (!forward && !reverse && Math.abs(game.speed) < 0.12) game.speed = 0;
+  if (Math.abs(throttle) <= 0.08 && Math.abs(game.speed) < 0.12) game.speed = 0;
   game.heading += turn * dt * (0.55 + Math.abs(game.speed) * 0.035) * (game.speed >= 0 ? 1 : -1);
   player.rotation.y = game.heading;
   const direction = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), game.heading);
@@ -305,6 +423,12 @@ function updatePlayer(dt, time) {
     }
     island.beacon.rotation.y += dt * 1.5;
     island.beacon.position.y = 5.2 + Math.sin(time * 2 + island.index) * 0.5;
+  }
+  for (const item of items) {
+    if (item.collected) continue;
+    item.group.rotation.y += dt * 1.2;
+    item.group.position.y = item.spawn.y + Math.sin(time * 2.4 + item.phase) * 0.45;
+    if (player.position.distanceTo(item.group.position) < 4.2) collectItem(item);
   }
   if (game.treasures === islands.length && player.position.distanceTo(port.position) < 12) endGame(true);
 }
@@ -393,7 +517,7 @@ function updateParticles(dt) {
 }
 
 function updateCamera(dt) {
-  const offset = new THREE.Vector3(0, 18, 30).applyAxisAngle(new THREE.Vector3(0, 1, 0), game.heading);
+  const offset = new THREE.Vector3(0, 22, 38).applyAxisAngle(new THREE.Vector3(0, 1, 0), game.heading);
   const targetPosition = player.position.clone().add(offset);
   camera.position.lerp(targetPosition, 1 - Math.pow(0.001, dt));
   const look = player.position.clone().add(new THREE.Vector3(0, 4.5, 0));
@@ -405,6 +529,7 @@ function updateHUD() {
   document.querySelector('#health-bar').style.width = `${game.health}%`;
   document.querySelector('#treasure').textContent = game.treasures;
   document.querySelector('#score').textContent = String(Math.round(game.score)).padStart(4, '0');
+  document.querySelector('#supplies').textContent = game.supplies;
   const degrees = ((-THREE.MathUtils.radToDeg(game.heading) % 360) + 360) % 360;
   document.querySelector('#needle').style.transform = `rotate(${degrees}deg)`;
   document.querySelector('#heading').textContent = `${String(Math.round(degrees)).padStart(3, '0')}°`;
@@ -443,19 +568,18 @@ function animate() {
 }
 
 function resetGame() {
-  Object.assign(game, { started: true, ended: false, speed: 0, heading: 0, health: 100, treasures: 0, score: 0, time: 0, cannonCooldown: 0, hitCooldown: 0 });
+  Object.assign(game, { started: true, ended: false, speed: 0, heading: 0, health: 100, treasures: 0, score: 0, supplies: 0, time: 0, cannonCooldown: 0, hitCooldown: 0 });
   player.position.set(0, 0.25, 32);
   player.rotation.set(0, 0, 0);
   islands.forEach((island) => { island.collected = false; island.beacon.visible = true; });
-  enemies.forEach((enemy) => { enemy.active = true; enemy.health = 3; enemy.ship.visible = true; });
-  enemies[0].ship.position.set(-28, 0.18, -72);
-  enemies[1].ship.position.set(62, 0.18, 62);
-  enemies[2].ship.position.set(-92, 0.18, 8);
+  enemies.forEach((enemy) => { enemy.active = true; enemy.health = 3; enemy.ship.visible = true; enemy.ship.position.copy(enemy.spawn); });
+  items.forEach((item) => { item.collected = false; item.group.visible = true; item.group.position.copy(item.spawn); });
   document.querySelector('#mission-title').textContent = '잃어버린 왕관의 보물 5개를 찾으십시오';
   document.querySelector('#mission-detail').textContent = '빛나는 섬 가까이 항해하면 보물을 발견할 수 있습니다.';
   document.querySelector('#start-screen').classList.add('hidden');
   document.querySelector('#end-screen').classList.add('hidden');
   showDanger('돛을 올려라 — 항해 시작!');
+  startAudio();
 }
 
 document.querySelector('#start-button').addEventListener('click', resetGame);
@@ -463,19 +587,65 @@ document.querySelector('#restart-button').addEventListener('click', resetGame);
 window.addEventListener('keydown', (event) => {
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
+  if (event.code === 'Space' && !event.repeat) fireCannon(player);
 });
 window.addEventListener('keyup', (event) => keys.delete(event.code));
 window.addEventListener('blur', () => keys.clear());
 
-for (const button of document.querySelectorAll('[data-key]')) {
-  const key = button.dataset.key;
-  const press = (event) => { event.preventDefault(); keys.add(key); };
-  const release = (event) => { event.preventDefault(); keys.delete(key); };
-  button.addEventListener('pointerdown', press);
-  button.addEventListener('pointerup', release);
-  button.addEventListener('pointercancel', release);
-  button.addEventListener('pointerleave', release);
+document.querySelector('#fire-button').addEventListener('pointerdown', (event) => {
+  event.preventDefault();
+  fireCannon(player);
+});
+
+const joystickElement = document.querySelector('#joystick');
+const joystickKnob = document.querySelector('#joystick-knob');
+
+function updateJoystick(event) {
+  const bounds = joystickElement.getBoundingClientRect();
+  const radius = bounds.width * 0.36;
+  let x = event.clientX - (bounds.left + bounds.width / 2);
+  let y = event.clientY - (bounds.top + bounds.height / 2);
+  const length = Math.hypot(x, y);
+  if (length > radius) {
+    x = (x / length) * radius;
+    y = (y / length) * radius;
+  }
+  joystick.x = x / radius;
+  joystick.y = y / radius;
+  joystickKnob.style.transform = `translate(${x}px, ${y}px)`;
 }
+
+function releaseJoystick(event) {
+  if (event && joystick.pointerId !== event.pointerId) return;
+  joystick.active = false;
+  joystick.pointerId = null;
+  joystick.x = 0;
+  joystick.y = 0;
+  joystickKnob.style.transform = 'translate(0, 0)';
+}
+
+joystickElement.addEventListener('pointerdown', (event) => {
+  event.preventDefault();
+  joystick.active = true;
+  joystick.pointerId = event.pointerId;
+  joystickElement.setPointerCapture(event.pointerId);
+  updateJoystick(event);
+});
+joystickElement.addEventListener('pointermove', (event) => {
+  if (joystick.active && joystick.pointerId === event.pointerId) updateJoystick(event);
+});
+joystickElement.addEventListener('pointerup', releaseJoystick);
+joystickElement.addEventListener('pointercancel', releaseJoystick);
+
+document.querySelector('#audio-toggle').addEventListener('click', () => {
+  musicMuted = !musicMuted;
+  const button = document.querySelector('#audio-toggle');
+  button.classList.toggle('muted', musicMuted);
+  button.textContent = musicMuted ? '♩' : '♫';
+  button.setAttribute('aria-pressed', String(musicMuted));
+  button.setAttribute('aria-label', musicMuted ? '배경 음악 켜기' : '배경 음악 끄기');
+  if (!musicMuted) startAudio();
+});
 
 function resize() {
   const width = window.innerWidth;
@@ -490,4 +660,7 @@ camera.position.set(0, 18, 62);
 camera.lookAt(player.position);
 animate();
 
-window.__oceanVoyager = { game, player, islands, enemies, resetGame };
+window.__oceanVoyager = {
+  game, player, islands, enemies, items, cannonballs, joystick, resetGame, fireCannon,
+  get audio() { return { context: audioContext?.state ?? 'not-started', muted: musicMuted, active: Boolean(musicTimer) }; },
+};

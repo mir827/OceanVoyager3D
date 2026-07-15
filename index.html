@@ -20,6 +20,7 @@
           <div><span>선체</span><strong id="health">100</strong><i class="bar"><b id="health-bar"></b></i></div>
           <div><span>보물</span><strong><em id="treasure">0</em> / 5</strong></div>
           <div><span>항해 점수</span><strong id="score">0000</strong></div>
+          <div><span>보급품</span><strong id="supplies">0</strong></div>
         </div>
       </section>
 
@@ -34,6 +35,7 @@
       </section>
 
       <div class="danger" id="danger" aria-live="assertive"></div>
+      <button class="audio-toggle" id="audio-toggle" aria-label="배경 음악 끄기" aria-pressed="false">♫</button>
 
       <section class="start-screen" id="start-screen">
         <div class="start-card">
@@ -61,15 +63,11 @@
       </section>
 
       <nav class="touch-controls" aria-label="터치 조작">
-        <div class="steer">
-          <button data-key="ArrowLeft" aria-label="왼쪽으로 회전">◀</button>
-          <button data-key="ArrowRight" aria-label="오른쪽으로 회전">▶</button>
+        <div class="joystick" id="joystick" aria-label="드래그하여 항해">
+          <div class="joystick-ring"></div>
+          <div class="joystick-knob" id="joystick-knob"></div>
         </div>
-        <div class="throttle">
-          <button data-key="ArrowUp" aria-label="전진">▲</button>
-          <button data-key="ArrowDown" aria-label="감속">▼</button>
-        </div>
-        <button class="fire" data-key="Space" aria-label="대포 발사">FIRE</button>
+        <button class="fire" id="fire-button" aria-label="대포 발사">FIRE</button>
       </nav>
     </main>
     <script type="module" src="/src/main.js"></script>
