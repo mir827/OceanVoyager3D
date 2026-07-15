@@ -25,11 +25,16 @@ try {
     ultimateButton: Boolean(document.querySelector('#ultimate-button')),
     canvasWidth: document.querySelector('#scene').clientWidth,
   }));
-  if (before.started || before.islands !== 5 || before.enemies < 10 || before.items < 12 || before.shipScale >= 0.8 || before.ultimate !== 40 || !before.ultimateButton || before.canvasWidth < 1000) {
+  if (before.started || before.islands !== 5 || before.enemies !== 20 || before.items < 12 || before.shipScale >= 0.8 || before.ultimate !== 40 || !before.ultimateButton || before.canvasWidth < 1000) {
     throw new Error(`Invalid initial state: ${JSON.stringify(before)}`);
   }
 
   await page.click('#start-button');
+  const enemyPositionsBefore = await page.evaluate(() => window.__oceanVoyager.enemies.map((enemy) => ({
+    x: enemy.ship.position.x,
+    z: enemy.ship.position.z,
+    active: enemy.active,
+  })));
   const missionOpen = await page.evaluate(() => ({
     collapsed: document.querySelector('#mission').classList.contains('collapsed'),
     expanded: document.querySelector('#mission').getAttribute('aria-expanded'),
@@ -40,6 +45,20 @@ try {
   }
 
   await new Promise((resolve) => setTimeout(resolve, 5200));
+  const enemyMotion = await page.evaluate((startPositions) => {
+    const movedEnemies = window.__oceanVoyager.enemies.filter((enemy, index) => {
+      const start = startPositions[index];
+      if (!enemy.active || !start?.active) return false;
+      const dx = enemy.ship.position.x - start.x;
+      const dz = enemy.ship.position.z - start.z;
+      return dx * dx + dz * dz > 0.25;
+    }).length;
+    return { total: window.__oceanVoyager.enemies.length, movedEnemies };
+  }, enemyPositionsBefore);
+  if (enemyMotion.total !== 20 || enemyMotion.movedEnemies < 20) {
+    throw new Error(`Enemy movement failed: ${JSON.stringify(enemyMotion)}`);
+  }
+
   const missionCollapsed = await page.evaluate(() => ({
     collapsed: document.querySelector('#mission').classList.contains('collapsed'),
     expanded: document.querySelector('#mission').getAttribute('aria-expanded'),
@@ -174,7 +193,7 @@ try {
   }
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
 
-  console.log(JSON.stringify({ initial: before, mission: { missionOpen, missionCollapsed, missionClicked, missionRecollapsed }, gameplay: after, cannon: { cannonBefore, cannonAfter }, mobile, joystick: joystickState }, null, 2));
+  console.log(JSON.stringify({ initial: before, enemyMotion, mission: { missionOpen, missionCollapsed, missionClicked, missionRecollapsed }, gameplay: after, cannon: { cannonBefore, cannonAfter }, mobile, joystick: joystickState }, null, 2));
 } finally {
   await browser.close();
 }

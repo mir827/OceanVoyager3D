@@ -53,12 +53,19 @@ const particles = [];
 const storms = [];
 const items = [];
 const joystick = { x: 0, y: 0, active: false, pointerId: null };
+const MAX_CANNONBALLS = 44;
+const MAX_HOSTILE_CANNONBALLS = 26;
+const MAX_FRIENDLY_CANNONBALLS = 16;
+const ENEMY_CHASE_RANGE_SQ = 55 * 55;
+const ENEMY_FIRE_RANGE_SQ = 34 * 34;
+const ENEMY_STANDOFF_RANGE_SQ = 18 * 18;
 const yAxis = new THREE.Vector3(0, 1, 0);
 const forwardAxis = new THREE.Vector3(0, 0, -1);
 const cameraLookOffset = new THREE.Vector3(0, 4.5, 0);
 const tempDirection = new THREE.Vector3();
 const tempPosition = new THREE.Vector3();
 const tempToPlayer = new THREE.Vector3();
+const tempPatrolTarget = new THREE.Vector3();
 const tempCameraOffset = new THREE.Vector3();
 const tempCameraTarget = new THREE.Vector3();
 const tempCameraLook = new THREE.Vector3();
@@ -154,7 +161,10 @@ function cachedParticleMaterial(color, roughness = 0.55, emissiveIntensity = 0, 
     particleMaterialCache.set(key, mat);
   }
   const cached = particleMaterialCache.get(key);
-  return transparent ? cached.clone() : cached;
+  if (!transparent) return cached;
+  const clone = cached.clone();
+  clone.userData.disposableParticleMaterial = true;
+  return clone;
 }
 
 function addParticle(particle) {
@@ -321,22 +331,44 @@ function createPort() {
 }
 const port = createPort();
 
-function createEnemy(x, z, phase) {
+function createEnemy(x, z, phase, patrolRadius = 10) {
   const ship = createShip({ pirate: true, scale: 0.72 });
   ship.position.set(x, 0.18, z);
   scene.add(ship);
-  enemies.push({ ship, phase, health: 3, maxHealth: 3, fireCooldown: 1.5 + phase, active: true, spawn: new THREE.Vector3(x, 0.18, z) });
+  enemies.push({
+    ship,
+    phase,
+    health: 3,
+    maxHealth: 3,
+    fireCooldown: 1.5 + (phase % 2.8),
+    active: true,
+    spawn: new THREE.Vector3(x, 0.18, z),
+    patrolRadius,
+    patrolSpeed: 0.2 + (phase % 1.7) * 0.035,
+  });
 }
-createEnemy(-28, -72, 0.4);
-createEnemy(62, 62, 2.1);
-createEnemy(-92, 8, 4.4);
-createEnemy(96, -42, 1.2);
-createEnemy(-45, 98, 3.3);
-createEnemy(18, -125, 5.1);
-createEnemy(118, 36, 0.8);
-createEnemy(-118, -34, 2.8);
-createEnemy(42, 120, 4.9);
-createEnemy(-12, -138, 6.2);
+[
+  [-28, -72, 0.4, 11],
+  [62, 62, 2.1, 13],
+  [-92, 8, 4.4, 10],
+  [96, -42, 1.2, 12],
+  [-45, 98, 3.3, 11],
+  [18, -125, 5.1, 14],
+  [118, 36, 0.8, 10],
+  [-118, -34, 2.8, 12],
+  [42, 120, 4.9, 11],
+  [-12, -138, 6.2, 13],
+  [82, -104, 1.7, 12],
+  [-86, -106, 3.8, 13],
+  [132, -6, 5.6, 10],
+  [-132, 48, 0.9, 11],
+  [6, 118, 2.9, 14],
+  [108, 100, 4.7, 10],
+  [-110, 112, 6.8, 12],
+  [52, -12, 7.6, 9],
+  [-60, -8, 8.4, 9],
+  [22, 74, 9.2, 11],
+].forEach(([x, z, phase, patrolRadius]) => createEnemy(x, z, phase, patrolRadius));
 
 function createMapItem(type, x, z, phase) {
   const group = new THREE.Group();
@@ -520,6 +552,11 @@ function playCannonSound() {
 
 function fireCannon(owner, hostile = false) {
   if (owner === player && (!game.started || game.ended || game.cannonCooldown > 0)) return false;
+  const activeBalls = cannonballs.length;
+  const sameSideBalls = cannonballs.reduce((count, ball) => count + (ball.hostile === hostile ? 1 : 0), 0);
+  if (activeBalls >= MAX_CANNONBALLS) return false;
+  if (hostile && sameSideBalls >= MAX_HOSTILE_CANNONBALLS) return false;
+  if (!hostile && sameSideBalls >= MAX_FRIENDLY_CANNONBALLS) return false;
   const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(owner.quaternion).normalize();
   const ball = mesh(
     hostile ? particleGeometry.cannonHostile : particleGeometry.cannonFriendly,
@@ -724,19 +761,28 @@ function updateEnemies(dt, time) {
     if (!enemy.active) continue;
     const toPlayer = tempToPlayer.subVectors(player.position, enemy.ship.position);
     const distanceSq = toPlayer.lengthSq();
-    if (distanceSq < 3025) {
-      const distance = Math.sqrt(distanceSq);
+    if (distanceSq < ENEMY_CHASE_RANGE_SQ) {
       const desired = Math.atan2(-toPlayer.x, -toPlayer.z);
       enemy.ship.rotation.y = THREE.MathUtils.lerp(enemy.ship.rotation.y, desired, dt * 0.8);
-      if (distance > 18) enemy.ship.position.addScaledVector(toPlayer.normalize(), dt * 3.7);
+      if (distanceSq > ENEMY_STANDOFF_RANGE_SQ) enemy.ship.position.addScaledVector(toPlayer.normalize(), dt * 3.7);
       enemy.fireCooldown -= dt;
-      if (distance < 34 && enemy.fireCooldown <= 0) {
+      if (distanceSq < ENEMY_FIRE_RANGE_SQ && enemy.fireCooldown <= 0) {
         fireCannon(enemy.ship, true);
-        enemy.fireCooldown = 2.8 + Math.random() * 2;
+        enemy.fireCooldown = 3.15 + Math.random() * 2.35;
       }
     } else {
-      enemy.ship.position.x += Math.sin(time * 0.3 + enemy.phase) * dt * 1.4;
-      enemy.ship.position.z += Math.cos(time * 0.25 + enemy.phase) * dt * 1.4;
+      tempPatrolTarget.set(
+        enemy.spawn.x + Math.sin(time * enemy.patrolSpeed + enemy.phase) * enemy.patrolRadius,
+        enemy.spawn.y,
+        enemy.spawn.z + Math.cos(time * (enemy.patrolSpeed * 0.85) + enemy.phase) * enemy.patrolRadius * 0.72,
+      );
+      tempDirection.subVectors(tempPatrolTarget, enemy.ship.position);
+      const patrolDistanceSq = tempDirection.lengthSq();
+      if (patrolDistanceSq > 0.04) {
+        const desired = Math.atan2(-tempDirection.x, -tempDirection.z);
+        enemy.ship.rotation.y = THREE.MathUtils.lerp(enemy.ship.rotation.y, desired, dt * 0.9);
+        enemy.ship.position.addScaledVector(tempDirection.normalize(), Math.min(dt * 3.1, Math.sqrt(patrolDistanceSq)));
+      }
     }
     enemy.ship.position.y = 0.2 + Math.sin(time * 2 + enemy.phase) * 0.14;
   }
@@ -764,12 +810,12 @@ function updateCannonballs(dt) {
     } else if (ball.trailTimer <= 0) {
       ball.trailTimer = ball.hostile ? 0.22 : 0.24;
     }
-    if (ball.hostile && ball.object.position.distanceTo(player.position) < 3.8) {
+    if (ball.hostile && ball.object.position.distanceToSquared(player.position) < 14.44) {
       damage(14, '해적의 포격!');
       ball.life = 0;
     } else if (!ball.hostile) {
       for (const enemy of enemies) {
-        if (enemy.active && ball.object.position.distanceTo(enemy.ship.position) < 4) {
+        if (enemy.active && ball.object.position.distanceToSquared(enemy.ship.position) < 16) {
           enemy.health -= 1;
           chargeUltimate(7);
           ball.life = 0;
@@ -820,6 +866,7 @@ function updateParticles(dt) {
     }
     if (particle.life <= 0) {
       scene.remove(particle.object);
+      if (particle.object.material?.userData?.disposableParticleMaterial) particle.object.material.dispose();
       particles.splice(i, 1);
     }
   }

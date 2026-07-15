@@ -85,13 +85,17 @@ try {
   });
 
   const state = await page.evaluate(() => ({
+    enemies: window.__oceanVoyager.enemies.length,
+    activeEnemies: window.__oceanVoyager.enemies.filter((enemy) => enemy.active).length,
     particles: window.__oceanVoyager.particleCount,
     audio: window.__oceanVoyager.audio,
     cannonballs: window.__oceanVoyager.cannonballs.length,
     performanceProfile: window.__oceanVoyager.performanceProfile,
   }));
   if (
-    state.particles > 140
+    state.enemies !== 20
+    || state.activeEnemies <= 0
+    || state.particles > 140
     || state.audio.source !== 'audio-file'
     || state.audio.style !== 'commercial-high-seas'
     || !state.audio.asset.endsWith('/audio/ocean-voyager-commercial-bgm.mp3')
