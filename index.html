@@ -21,6 +21,7 @@
           <div><span>보물</span><strong><em id="treasure">0</em> / 5</strong></div>
           <div><span>항해 점수</span><strong id="score">0000</strong></div>
           <div><span>보급품</span><strong id="supplies">0</strong></div>
+          <div class="ultimate-stat"><span>궁극기</span><strong id="ultimate">40%</strong><i class="bar ultimate-bar"><b id="ultimate-bar"></b></i></div>
         </div>
       </section>
 
@@ -47,6 +48,7 @@
             <div><kbd>A</kbd><kbd>D</kbd><span>방향 전환</span></div>
             <div><kbd>S</kbd><kbd>↓</kbd><span>감속 / 후진</span></div>
             <div><kbd>Space</kbd><span>대포 발사</span></div>
+            <div><kbd>E</kbd><span>폭풍 포격</span></div>
           </div>
           <button id="start-button">출항하기</button>
           <small>키보드 또는 화면 버튼으로 플레이할 수 있습니다.</small>
@@ -67,7 +69,10 @@
           <div class="joystick-ring"></div>
           <div class="joystick-knob" id="joystick-knob"></div>
         </div>
-        <button class="fire" id="fire-button" aria-label="대포 발사">FIRE</button>
+        <div class="combat-actions">
+          <button class="ultimate" id="ultimate-button" aria-label="폭풍 포격">ULT</button>
+          <button class="fire" id="fire-button" aria-label="대포 발사">FIRE</button>
+        </div>
       </nav>
     </main>
     <script type="module" src="/src/main.js"></script>

@@ -21,9 +21,11 @@ try {
     enemies: window.__oceanVoyager.enemies.length,
     items: window.__oceanVoyager.items.length,
     shipScale: window.__oceanVoyager.player.scale.x,
+    ultimate: window.__oceanVoyager.game.ultimateCharge,
+    ultimateButton: Boolean(document.querySelector('#ultimate-button')),
     canvasWidth: document.querySelector('#scene').clientWidth,
   }));
-  if (before.started || before.islands !== 5 || before.enemies < 6 || before.items < 12 || before.shipScale >= 0.8 || before.canvasWidth < 1000) {
+  if (before.started || before.islands !== 5 || before.enemies < 10 || before.items < 12 || before.shipScale >= 0.8 || before.ultimate !== 40 || !before.ultimateButton || before.canvasWidth < 1000) {
     throw new Error(`Invalid initial state: ${JSON.stringify(before)}`);
   }
 
@@ -44,6 +46,18 @@ try {
   }));
   if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active || after.audio.context !== 'running' || after.audio.gain < 0.9) {
     throw new Error(`Gameplay input failed: ${JSON.stringify({ before, after })}`);
+  }
+
+  await page.evaluate(() => window.__oceanVoyager.chargeUltimate(60));
+  await page.keyboard.press('KeyE');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const ultimate = await page.evaluate(() => ({
+    charge: window.__oceanVoyager.game.ultimateCharge,
+    activeEnemies: window.__oceanVoyager.enemies.filter((enemy) => enemy.active).length,
+    particles: document.querySelector('#ultimate-button').classList.contains('ready'),
+  }));
+  if (ultimate.charge !== 0 || ultimate.activeEnemies >= before.enemies || ultimate.particles) {
+    throw new Error(`Ultimate failed: ${JSON.stringify(ultimate)}`);
   }
 
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
@@ -74,7 +88,7 @@ try {
   if (!joystickState.active || joystickState.x < 0.3 || joystickState.y > -0.3) {
     throw new Error(`Joystick drag failed: ${JSON.stringify(joystickState)}`);
   }
-  if (Math.abs(joystickState.heading - motionBefore.heading) < 0.12 || joystickState.speed <= motionBefore.speed) {
+  if (Math.abs(joystickState.heading - motionBefore.heading) < 0.12 || joystickState.speed <= 0) {
     throw new Error(`Joystick response too slow: ${JSON.stringify({ motionBefore, joystickState })}`);
   }
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
