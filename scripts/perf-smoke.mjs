@@ -13,15 +13,25 @@ function summarize(samples) {
     frames: samples.length,
     avg: samples.reduce((sum, value) => sum + value, 0) / Math.max(1, samples.length),
     p95: pick(0.95),
+    p99: pick(0.99),
     max: sorted.at(-1) ?? 0,
     longFrames: samples.filter((value) => value > 50).length,
   };
 }
 
-async function runProbe(page, label, scenario) {
-  const samples = await page.evaluate(async ({ label: scenarioLabel, scenarioSource }) => {
+async function runProbe(page, label, scenario, options = {}) {
+  const result = await page.evaluate(async ({ label: scenarioLabel, scenarioSource, scenarioOptions }) => {
     const runScenario = new Function(`return (${scenarioSource})`)();
     const frameTimes = [];
+    const longTasks = [];
+    let observer;
+    if (globalThis.PerformanceObserver?.supportedEntryTypes?.includes('longtask')) {
+      observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) longTasks.push(Math.round(entry.duration * 10) / 10);
+      });
+      observer.observe({ entryTypes: ['longtask'] });
+    }
+    const heapStart = performance.memory?.usedJSHeapSize ?? 0;
     let last = performance.now();
     let running = true;
 
@@ -38,26 +48,53 @@ async function runProbe(page, label, scenario) {
       requestAnimationFrame(tick);
     });
 
-    await runScenario(window.__oceanVoyager, scenarioLabel);
+    await runScenario(window.__oceanVoyager, scenarioLabel, scenarioOptions);
     running = false;
     await framePromise;
-    return frameTimes.slice(3);
-  }, { label, scenarioSource: scenario.toString() });
+    observer?.disconnect();
+    return {
+      frameTimes: frameTimes.slice(3),
+      longTasks,
+      heapDelta: (performance.memory?.usedJSHeapSize ?? 0) - heapStart,
+    };
+  }, { label, scenarioSource: scenario.toString(), scenarioOptions: options.scenarioOptions ?? {} });
 
-  const stats = summarize(samples);
-  if (stats.frames < 45 || stats.p95 > 48 || stats.max > 75 || stats.longFrames > 6) {
-    throw new Error(`${label} frame budget failed: ${JSON.stringify(stats)}`);
+  const stats = summarize(result.frameTimes);
+  const budget = {
+    minFrames: 45,
+    maxP95: 48,
+    maxFrame: 75,
+    maxLongFrames: 6,
+    maxLongTaskDuration: 100,
+    maxSevereLongTasks: 0,
+    ...options.budget,
+  };
+  const severeLongTasks = result.longTasks.filter((duration) => duration > budget.maxLongTaskDuration);
+  if (
+    stats.frames < budget.minFrames
+    || stats.p95 > budget.maxP95
+    || stats.max > budget.maxFrame
+    || stats.longFrames > budget.maxLongFrames
+    || severeLongTasks.length > budget.maxSevereLongTasks
+  ) {
+    throw new Error(`${label} frame budget failed: ${JSON.stringify({ stats, longTasks: result.longTasks, severeLongTasks, heapDelta: result.heapDelta })}`);
   }
-  return stats;
+  return { ...stats, longTasks: result.longTasks, severeLongTasks, heapDelta: result.heapDelta };
 }
 
+let page;
+
 try {
-  const page = await browser.newPage();
+  page = await browser.newPage();
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
-  await page.goto('http://localhost:4173/', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:4173/OceanVoyager3D/', { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.__oceanVoyager?.player);
   await page.click('#start-button');
   await page.waitForFunction(() => window.__oceanVoyager.game.started && window.__oceanVoyager.audio.context === 'running');
+  await page.evaluate(async () => {
+    await document.fonts?.ready;
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+  });
 
   const pickup = await runProbe(page, 'pickup', async (voyager) => {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -82,6 +119,61 @@ try {
       await wait(285);
     }
     await wait(900);
+  });
+
+  const enduranceMs = Number(process.env.PERF_ENDURANCE_MS ?? 30000);
+  const endurance = await runProbe(page, 'mobile-endurance', async (voyager, _label, { durationMs }) => {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    voyager.game.health = 100;
+    voyager.game.supplies = 99;
+    voyager.game.speed = 7;
+    voyager.game.heading = 0;
+    voyager.player.rotation.set(0, 0, 0);
+
+    let enemyIndex = 0;
+    let itemIndex = 0;
+    let nextFire = 0;
+    let nextTeleport = 0;
+    let nextPickup = 0;
+    const startedAt = performance.now();
+    while (performance.now() - startedAt < durationMs) {
+      const elapsed = performance.now() - startedAt;
+      voyager.game.health = 100;
+      voyager.game.speed = 7 + Math.sin(elapsed * 0.002) * 2.5;
+      voyager.game.heading += 0.018 * Math.sin(elapsed * 0.004);
+      voyager.player.rotation.y = voyager.game.heading;
+
+      if (elapsed >= nextTeleport) {
+        const enemy = voyager.enemies[enemyIndex % voyager.enemies.length];
+        enemyIndex += 1;
+        if (enemy?.active) {
+          voyager.player.position.set(enemy.ship.position.x + 20, 0.28, enemy.ship.position.z + 18);
+        }
+        nextTeleport = elapsed + 4200;
+      }
+      if (elapsed >= nextFire) {
+        voyager.fireCannon(voyager.player);
+        nextFire = elapsed + 310;
+      }
+      if (elapsed >= nextPickup && itemIndex < voyager.items.length) {
+        const item = voyager.items[itemIndex];
+        itemIndex += 1;
+        if (item && !item.collected) voyager.collectItem(item);
+        nextPickup = elapsed + 2600;
+      }
+      await wait(120);
+    }
+    await wait(1000);
+  }, {
+    scenarioOptions: { durationMs: enduranceMs },
+    budget: {
+      minFrames: Math.floor((enduranceMs / 1000) * 45),
+      maxP95: 48,
+      maxFrame: 125,
+      maxLongFrames: Math.max(10, Math.ceil(enduranceMs / 1200)),
+      maxLongTaskDuration: 100,
+      maxSevereLongTasks: 0,
+    },
   });
 
   const state = await page.evaluate(() => ({
@@ -111,7 +203,11 @@ try {
     throw new Error(`Post-stress state failed: ${JSON.stringify(state)}`);
   }
 
-  console.log(JSON.stringify({ pickup, rapidFire, state }, null, 2));
+  console.log(JSON.stringify({ pickup, rapidFire, endurance, state }, null, 2));
 } finally {
+  await page?.evaluate(() => {
+    window.__oceanVoyager?.player && document.querySelectorAll('audio, video').forEach((media) => media.pause());
+  }).catch(() => {});
+  await page?.close().catch(() => {});
   await browser.close();
 }

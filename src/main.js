@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import './style.css';
 
 const canvas = document.querySelector('#scene');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
 const compactDevice = window.innerWidth <= 760 || window.matchMedia('(pointer: coarse)').matches;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: !compactDevice, alpha: false, powerPreference: 'high-performance' });
 const pixelRatioCap = compactDevice ? 1 : 1.75;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
 renderer.shadowMap.enabled = !compactDevice;
@@ -53,15 +53,18 @@ const particles = [];
 const storms = [];
 const items = [];
 const joystick = { x: 0, y: 0, active: false, pointerId: null };
-const MAX_CANNONBALLS = 44;
-const MAX_HOSTILE_CANNONBALLS = 26;
-const MAX_FRIENDLY_CANNONBALLS = 16;
+const MAX_CANNONBALLS = compactDevice ? 28 : 44;
+const MAX_HOSTILE_CANNONBALLS = compactDevice ? 16 : 26;
+const MAX_FRIENDLY_CANNONBALLS = compactDevice ? 10 : 16;
 const ENEMY_CHASE_RANGE_SQ = 55 * 55;
 const ENEMY_FIRE_RANGE_SQ = 34 * 34;
 const ENEMY_STANDOFF_RANGE_SQ = 18 * 18;
 const yAxis = new THREE.Vector3(0, 1, 0);
 const forwardAxis = new THREE.Vector3(0, 0, -1);
 const cameraLookOffset = new THREE.Vector3(0, 4.5, 0);
+const skyNightColor = new THREE.Color(0x17273f);
+const skyDayColor = new THREE.Color(0x8ac4d0);
+const skyFrameColor = new THREE.Color();
 const tempDirection = new THREE.Vector3();
 const tempPosition = new THREE.Vector3();
 const tempToPlayer = new THREE.Vector3();
@@ -76,7 +79,7 @@ let lastCannonSoundAt = -1;
 const bgmUrl = `${import.meta.env.BASE_URL}audio/ocean-voyager-commercial-bgm.mp3`;
 const bgm = new Audio(bgmUrl);
 bgm.loop = true;
-bgm.preload = 'auto';
+bgm.preload = compactDevice ? 'metadata' : 'auto';
 bgm.volume = 0.74;
 const bgmReady = new Promise((resolve) => {
   if (bgm.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
@@ -147,7 +150,7 @@ const particleGeometry = {
   cannonHostile: new THREE.SphereGeometry(0.24, 10, 10),
 };
 const particleMaterialCache = new Map();
-const MAX_PARTICLES = 140;
+const MAX_PARTICLES = compactDevice ? 76 : 140;
 
 function cachedParticleMaterial(color, roughness = 0.55, emissiveIntensity = 0, transparent = false) {
   const key = `${color}:${roughness}:${emissiveIntensity}:${transparent}`;
@@ -162,6 +165,7 @@ function cachedParticleMaterial(color, roughness = 0.55, emissiveIntensity = 0, 
   }
   const cached = particleMaterialCache.get(key);
   if (!transparent) return cached;
+  if (compactDevice) return cached;
   const clone = cached.clone();
   clone.userData.disposableParticleMaterial = true;
   return clone;
@@ -177,10 +181,12 @@ function addParticle(particle) {
 }
 
 function scaledEffectCount(count, minimum = 2) {
+  const compactCount = compactDevice ? Math.max(1, Math.ceil(count * 0.42)) : count;
+  const compactMinimum = compactDevice ? Math.min(minimum, 2) : minimum;
   const pressure = particles.length / MAX_PARTICLES;
-  if (pressure > 0.82) return Math.max(minimum, Math.ceil(count * 0.22));
-  if (pressure > 0.62) return Math.max(minimum, Math.ceil(count * 0.45));
-  return count;
+  if (pressure > 0.82) return Math.max(compactMinimum, Math.ceil(compactCount * 0.22));
+  if (pressure > 0.62) return Math.max(compactMinimum, Math.ceil(compactCount * 0.45));
+  return compactCount;
 }
 
 function particleMesh(geometry, mat, position, scale = 1, rotation = [0, 0, 0]) {
@@ -456,7 +462,8 @@ function spawnExplosion(position, radius = 1, count = 24) {
       baseScale,
     });
   }
-  for (let i = 0; i < 2; i += 1) {
+  const ringCount = compactDevice ? 1 : 2;
+  for (let i = 0; i < ringCount; i += 1) {
     const ring = particleMesh(
       particleGeometry.ring,
       cachedParticleMaterial(i ? 0xffe4a2 : 0xff673d, 0.3, 1.5, true),
@@ -466,10 +473,12 @@ function spawnExplosion(position, radius = 1, count = 24) {
     );
     addParticle({ object: ring, velocity: new THREE.Vector3(0, 0.25, 0), life: 0.7, maxLife: 0.7, expand: 1.9 + i * 0.7 });
   }
-  const light = new THREE.PointLight(0xff9b45, 45 * radius, 28 * radius, 2);
-  light.position.copy(burst);
-  scene.add(light);
-  addParticle({ object: light, velocity: new THREE.Vector3(), life: 0.32, maxLife: 0.32 });
+  if (!compactDevice) {
+    const light = new THREE.PointLight(0xff9b45, 45 * radius, 28 * radius, 2);
+    light.position.copy(burst);
+    scene.add(light);
+    addParticle({ object: light, velocity: new THREE.Vector3(), life: 0.32, maxLife: 0.32 });
+  }
 }
 
 function spawnMuzzleFlash(position, direction, hostile = false) {
@@ -482,7 +491,7 @@ function spawnMuzzleFlash(position, direction, hostile = false) {
   flash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
   flash.position.addScaledVector(direction, 1.3);
   addParticle({ object: flash, velocity: direction.clone().multiplyScalar(5), life: 0.16, maxLife: 0.16 });
-  spawnSplash(position, hostile ? 0xd54e3b : 0xffb66c, hostile ? 2 : 2);
+  spawnSplash(position, hostile ? 0xd54e3b : 0xffb66c, compactDevice ? 1 : 2);
 }
 
 function playTone(frequency, duration, volume = 0.035, type = 'sine', delay = 0) {
@@ -564,8 +573,10 @@ function fireCannon(owner, hostile = false) {
     scene,
   );
   ball.position.copy(owner.position).addScaledVector(direction, 5).add(new THREE.Vector3(0, 2.2, 0));
-  const ember = new THREE.PointLight(hostile ? 0xd6442f : 0xff863d, hostile ? 8 : 20, hostile ? 7 : 12, 2);
-  ball.add(ember);
+  if (!compactDevice) {
+    const ember = new THREE.PointLight(hostile ? 0xd6442f : 0xff863d, hostile ? 8 : 20, hostile ? 7 : 12, 2);
+    ball.add(ember);
+  }
   cannonballs.push({ object: ball, velocity: direction.multiplyScalar(hostile ? 25 : 39), hostile, life: 4, trailTimer: 0 });
   spawnMuzzleFlash(ball.position, direction, hostile);
   if (owner === player) {
@@ -712,13 +723,16 @@ function updateOcean(time) {
   oceanGeo.attributes.position.needsUpdate = true;
 }
 
+function shapeInput(value) {
+  return Math.sign(value) * Math.min(1, Math.max(0, (Math.abs(value) - 0.025) / 0.975) ** 0.72);
+}
+
 function updatePlayer(dt, time) {
   const forward = keys.has('KeyW') || keys.has('ArrowUp');
   const reverse = keys.has('KeyS') || keys.has('ArrowDown');
   const left = keys.has('KeyA') || keys.has('ArrowLeft');
   const right = keys.has('KeyD') || keys.has('ArrowRight');
   const keyboardTurn = (left ? 1 : 0) - (right ? 1 : 0);
-  const shapeInput = (value) => Math.sign(value) * Math.min(1, Math.max(0, (Math.abs(value) - 0.025) / 0.975) ** 0.72);
   const turn = joystick.active ? -shapeInput(joystick.x) : keyboardTurn;
   const throttle = joystick.active ? -shapeInput(joystick.y) : (forward ? 1 : reverse ? -1 : 0);
   const acceleration = throttle > 0.025 ? 15 * throttle : throttle < -0.025 ? 12 * throttle : -Math.sign(game.speed) * 2.2;
@@ -795,8 +809,8 @@ function updateCannonballs(dt) {
     ball.trailTimer -= dt;
     ball.velocity.y -= 2.5 * dt;
     ball.object.position.addScaledVector(ball.velocity, dt);
-    if (ball.trailTimer <= 0 && particles.length < MAX_PARTICLES * 0.58) {
-      ball.trailTimer = ball.hostile ? 0.18 : 0.2;
+    if (ball.trailTimer <= 0 && particles.length < MAX_PARTICLES * (compactDevice ? 0.42 : 0.58)) {
+      ball.trailTimer = compactDevice ? (ball.hostile ? 0.32 : 0.36) : (ball.hostile ? 0.18 : 0.2);
       const trailColor = ball.hostile ? 0xbf3b32 : 0xffa45a;
       const life = ball.hostile ? 0.4 : 0.62;
       const baseScale = ball.hostile ? 0.11 : 0.16;
@@ -808,7 +822,7 @@ function updateCannonballs(dt) {
       );
       addParticle({ object: trail, velocity: new THREE.Vector3((Math.random() - 0.5) * 1.8, 0.6 + Math.random() * 1.4, (Math.random() - 0.5) * 1.8), life, maxLife: life, baseScale });
     } else if (ball.trailTimer <= 0) {
-      ball.trailTimer = ball.hostile ? 0.22 : 0.24;
+      ball.trailTimer = compactDevice ? (ball.hostile ? 0.38 : 0.42) : (ball.hostile ? 0.22 : 0.24);
     }
     if (ball.hostile && ball.object.position.distanceToSquared(player.position) < 14.44) {
       damage(14, '해적의 포격!');
@@ -862,7 +876,7 @@ function updateParticles(dt) {
         const lifeRatio = Math.max(0, particle.life / (particle.maxLife ?? 1));
         particle.object.scale.setScalar(Math.max(0.01, (particle.baseScale ?? 1) * lifeRatio));
       }
-      if (particle.object.material?.transparent) particle.object.material.opacity = Math.max(0, particle.life / (particle.maxLife ?? 1));
+      if (particle.object.material?.userData?.disposableParticleMaterial) particle.object.material.opacity = Math.max(0, particle.life / (particle.maxLife ?? 1));
     }
     if (particle.life <= 0) {
       scene.remove(particle.object);
@@ -936,9 +950,9 @@ function updateHUD() {
 
 function updateSky(time) {
   const dayCycle = (Math.sin(time * 0.018 - 0.7) + 1) / 2;
-  const sky = new THREE.Color().lerpColors(new THREE.Color(0x17273f), new THREE.Color(0x8ac4d0), dayCycle);
-  scene.background.copy(sky);
-  scene.fog.color.copy(sky);
+  skyFrameColor.lerpColors(skyNightColor, skyDayColor, dayCycle);
+  scene.background.copy(skyFrameColor);
+  scene.fog.color.copy(skyFrameColor);
   scene.fog.density = THREE.MathUtils.lerp(scene.fog.density, 0.0065, 0.015);
   stars.material.opacity = THREE.MathUtils.clamp((0.45 - dayCycle) * 2.4, 0, 0.8);
   sun.intensity = 1 + dayCycle * 2.2;

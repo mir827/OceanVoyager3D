@@ -6,12 +6,14 @@ const browser = await puppeteer.launch({
   args: ['--no-sandbox', '--use-angle=metal'],
 });
 
+let page;
+
 try {
-  const page = await browser.newPage();
+  page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
-  await page.goto('http://localhost:4173/', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:4173/OceanVoyager3D/', { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.__oceanVoyager?.player);
 
   const before = await page.evaluate(() => ({
@@ -195,5 +197,9 @@ try {
 
   console.log(JSON.stringify({ initial: before, enemyMotion, mission: { missionOpen, missionCollapsed, missionClicked, missionRecollapsed }, gameplay: after, cannon: { cannonBefore, cannonAfter }, mobile, joystick: joystickState }, null, 2));
 } finally {
+  await page?.evaluate(() => {
+    window.__oceanVoyager?.player && document.querySelectorAll('audio, video').forEach((media) => media.pause());
+  }).catch(() => {});
+  await page?.close().catch(() => {});
   await browser.close();
 }
