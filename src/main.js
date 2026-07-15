@@ -51,6 +51,15 @@ const particles = [];
 const storms = [];
 const items = [];
 const joystick = { x: 0, y: 0, active: false, pointerId: null };
+const yAxis = new THREE.Vector3(0, 1, 0);
+const forwardAxis = new THREE.Vector3(0, 0, -1);
+const cameraLookOffset = new THREE.Vector3(0, 4.5, 0);
+const tempDirection = new THREE.Vector3();
+const tempPosition = new THREE.Vector3();
+const tempToPlayer = new THREE.Vector3();
+const tempCameraOffset = new THREE.Vector3();
+const tempCameraTarget = new THREE.Vector3();
+const tempCameraLook = new THREE.Vector3();
 let audioContext;
 let musicGain;
 let musicTimer;
@@ -91,6 +100,18 @@ const ui = {
   ultimateBar: document.querySelector('#ultimate-bar'),
   ultimateButton: document.querySelector('#ultimate-button'),
   ultimateStat: document.querySelector('.ultimate-stat'),
+};
+const hudState = {
+  health: '',
+  healthWidth: '',
+  treasure: '',
+  score: '',
+  supplies: '',
+  ultimate: '',
+  ultimateWidth: '',
+  ultimateReady: null,
+  needle: '',
+  heading: '',
 };
 
 const particleGeometry = {
@@ -147,9 +168,10 @@ function particleMesh(geometry, mat, position, scale = 1, rotation = [0, 0, 0]) 
   return object;
 }
 
-const oceanGeo = new THREE.PlaneGeometry(650, 650, 80, 80);
+const oceanGeo = new THREE.PlaneGeometry(650, 650, 40, 40);
 oceanGeo.rotateX(-Math.PI / 2);
 const oceanBase = oceanGeo.attributes.position.array.slice();
+let lastOceanUpdate = -Infinity;
 const ocean = new THREE.Mesh(
   oceanGeo,
   new THREE.MeshPhysicalMaterial({
@@ -554,7 +576,7 @@ function collectItem(item) {
     powder: () => { game.supplies += 1; chargeUltimate(15); showDanger('화약 상자 — 대포 재장전 강화!'); },
   };
   effects[item.type]();
-  spawnSplash(item.group.position, 0xffd36b, 4);
+  spawnSplash(item.group.position, 0xffd36b, 2);
 }
 
 function chargeUltimate(amount) {
@@ -610,9 +632,14 @@ function damage(amount, message) {
 }
 
 let dangerTimer;
+let lastDangerAt = 0;
 function showDanger(text) {
-  ui.danger.textContent = text;
-  ui.danger.classList.add('show');
+  const now = performance.now();
+  if (ui.danger.textContent !== text) ui.danger.textContent = text;
+  if (!ui.danger.classList.contains('show') || now - lastDangerAt > 220) {
+    ui.danger.classList.add('show');
+  }
+  lastDangerAt = now;
   clearTimeout(dangerTimer);
   dangerTimer = setTimeout(() => ui.danger.classList.remove('show'), 1600);
 }
@@ -654,6 +681,8 @@ function endGame(victory) {
 }
 
 function updateOcean(time) {
+  if (time - lastOceanUpdate < 0.08) return;
+  lastOceanUpdate = time;
   const positions = oceanGeo.attributes.position.array;
   for (let i = 0; i < positions.length; i += 3) {
     const x = oceanBase[i];
@@ -677,18 +706,22 @@ function updatePlayer(dt, time) {
   if (Math.abs(throttle) <= 0.025 && Math.abs(game.speed) < 0.12) game.speed = 0;
   game.heading += turn * dt * (1.35 + Math.abs(game.speed) * 0.045) * (game.speed >= 0 ? 1 : -1);
   player.rotation.y = game.heading;
-  const direction = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), game.heading);
+  const direction = tempDirection.copy(forwardAxis).applyAxisAngle(yAxis, game.heading);
   player.position.addScaledVector(direction, game.speed * dt);
   player.position.x = THREE.MathUtils.clamp(player.position.x, -145, 145);
   player.position.z = THREE.MathUtils.clamp(player.position.z, -145, 145);
   player.position.y = 0.28 + Math.sin(time * 2.2 + player.position.x * 0.04) * 0.18;
   player.rotation.z = THREE.MathUtils.lerp(player.rotation.z, -turn * 0.09 + Math.sin(time * 1.5) * 0.018, dt * 3);
-  if (Math.abs(game.speed) > 2.5 && Math.random() < dt * 10) spawnSplash(player.position.clone().addScaledVector(direction, -5), 0xc9f4ff, 2);
+  if (Math.abs(game.speed) > 2.5 && Math.random() < dt * 10) {
+    spawnSplash(tempPosition.copy(player.position).addScaledVector(direction, -5), 0xc9f4ff, 2);
+  }
 
   for (const island of islands) {
-    const distance = player.position.distanceTo(island.group.position);
-    if (distance < island.radius + 3.6) {
+    const reefRange = island.radius + 3.6;
+    const distanceSq = player.position.distanceToSquared(island.group.position);
+    if (distanceSq < reefRange * reefRange) {
       if (!island.collected) collectTreasure(island);
+      const distance = Math.sqrt(distanceSq);
       if (distance < island.radius + 0.7) damage(7, '암초 충돌!');
     }
     island.beacon.rotation.y += dt * 1.5;
@@ -698,17 +731,18 @@ function updatePlayer(dt, time) {
     if (item.collected) continue;
     item.group.rotation.y += dt * 1.2;
     item.group.position.y = item.spawn.y + Math.sin(time * 2.4 + item.phase) * 0.45;
-    if (player.position.distanceTo(item.group.position) < 4.2) collectItem(item);
+    if (player.position.distanceToSquared(item.group.position) < 17.64) collectItem(item);
   }
-  if (game.treasures === islands.length && player.position.distanceTo(port.position) < 12) endGame(true);
+  if (game.treasures === islands.length && player.position.distanceToSquared(port.position) < 144) endGame(true);
 }
 
 function updateEnemies(dt, time) {
   for (const enemy of enemies) {
     if (!enemy.active) continue;
-    const toPlayer = player.position.clone().sub(enemy.ship.position);
-    const distance = toPlayer.length();
-    if (distance < 55) {
+    const toPlayer = tempToPlayer.subVectors(player.position, enemy.ship.position);
+    const distanceSq = toPlayer.lengthSq();
+    if (distanceSq < 3025) {
+      const distance = Math.sqrt(distanceSq);
       const desired = Math.atan2(-toPlayer.x, -toPlayer.z);
       enemy.ship.rotation.y = THREE.MathUtils.lerp(enemy.ship.rotation.y, desired, dt * 0.8);
       if (distance > 18) enemy.ship.position.addScaledVector(toPlayer.normalize(), dt * 3.7);
@@ -809,26 +843,65 @@ function updateParticles(dt) {
 }
 
 function updateCamera(dt) {
-  const offset = new THREE.Vector3(0, 22, 38).applyAxisAngle(new THREE.Vector3(0, 1, 0), game.heading);
-  const targetPosition = player.position.clone().add(offset);
-  camera.position.lerp(targetPosition, 1 - Math.pow(0.001, dt));
-  const look = player.position.clone().add(new THREE.Vector3(0, 4.5, 0));
-  camera.lookAt(look);
+  tempCameraOffset.set(0, 22, 38).applyAxisAngle(yAxis, game.heading);
+  tempCameraTarget.copy(player.position).add(tempCameraOffset);
+  camera.position.lerp(tempCameraTarget, 1 - Math.pow(0.001, dt));
+  tempCameraLook.copy(player.position).add(cameraLookOffset);
+  camera.lookAt(tempCameraLook);
 }
 
 function updateHUD() {
-  ui.health.textContent = Math.ceil(game.health);
-  ui.healthBar.style.width = `${game.health}%`;
-  ui.treasure.textContent = game.treasures;
-  ui.score.textContent = String(Math.round(game.score)).padStart(4, '0');
-  ui.supplies.textContent = game.supplies;
-  ui.ultimate.textContent = `${Math.round(game.ultimateCharge)}%`;
-  ui.ultimateBar.style.width = `${game.ultimateCharge}%`;
-  ui.ultimateStat.classList.toggle('ready', game.ultimateCharge >= 100);
-  ui.ultimateButton.classList.toggle('ready', game.ultimateCharge >= 100);
+  const health = String(Math.ceil(game.health));
+  if (hudState.health !== health) {
+    hudState.health = health;
+    ui.health.textContent = health;
+  }
+  const healthWidth = `${Math.round(game.health)}%`;
+  if (hudState.healthWidth !== healthWidth) {
+    hudState.healthWidth = healthWidth;
+    ui.healthBar.style.width = healthWidth;
+  }
+  const treasure = String(game.treasures);
+  if (hudState.treasure !== treasure) {
+    hudState.treasure = treasure;
+    ui.treasure.textContent = treasure;
+  }
+  const score = String(Math.round(game.score)).padStart(4, '0');
+  if (hudState.score !== score) {
+    hudState.score = score;
+    ui.score.textContent = score;
+  }
+  const supplies = String(game.supplies);
+  if (hudState.supplies !== supplies) {
+    hudState.supplies = supplies;
+    ui.supplies.textContent = supplies;
+  }
+  const ultimate = `${Math.round(game.ultimateCharge)}%`;
+  if (hudState.ultimate !== ultimate) {
+    hudState.ultimate = ultimate;
+    ui.ultimate.textContent = ultimate;
+  }
+  if (hudState.ultimateWidth !== ultimate) {
+    hudState.ultimateWidth = ultimate;
+    ui.ultimateBar.style.width = ultimate;
+  }
+  const ultimateReady = game.ultimateCharge >= 100;
+  if (hudState.ultimateReady !== ultimateReady) {
+    hudState.ultimateReady = ultimateReady;
+    ui.ultimateStat.classList.toggle('ready', ultimateReady);
+    ui.ultimateButton.classList.toggle('ready', ultimateReady);
+  }
   const degrees = ((-THREE.MathUtils.radToDeg(game.heading) % 360) + 360) % 360;
-  ui.needle.style.transform = `rotate(${degrees}deg)`;
-  ui.heading.textContent = `${String(Math.round(degrees)).padStart(3, '0')}°`;
+  const heading = `${String(Math.round(degrees)).padStart(3, '0')}°`;
+  if (hudState.heading !== heading) {
+    hudState.heading = heading;
+    ui.heading.textContent = heading;
+  }
+  const needle = `rotate(${Math.round(degrees)}deg)`;
+  if (hudState.needle !== needle) {
+    hudState.needle = needle;
+    ui.needle.style.transform = needle;
+  }
 }
 
 function updateSky(time) {
