@@ -45,7 +45,7 @@ async function runProbe(page, label, scenario) {
   }, { label, scenarioSource: scenario.toString() });
 
   const stats = summarize(samples);
-  if (stats.frames < 45 || stats.p95 > 52 || stats.max > 120 || stats.longFrames > 6) {
+  if (stats.frames < 45 || stats.p95 > 52 || stats.max > 100 || stats.longFrames > 6) {
     throw new Error(`${label} frame budget failed: ${JSON.stringify(stats)}`);
   }
   return stats;
@@ -89,7 +89,7 @@ try {
     audio: window.__oceanVoyager.audio,
     cannonballs: window.__oceanVoyager.cannonballs.length,
   }));
-  if (state.particles > 140 || state.audio.style !== 'cinematic-privateer' || state.audio.layers < 8) {
+  if (state.particles > 140 || state.audio.style !== 'arcade-high-seas' || state.audio.tempoMs !== 190 || state.audio.layers < 8) {
     throw new Error(`Post-stress state failed: ${JSON.stringify(state)}`);
   }
 

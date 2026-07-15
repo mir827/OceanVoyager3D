@@ -68,9 +68,9 @@ let musicStep = 0;
 let hatNoiseBuffer;
 let lastCannonSoundAt = -1;
 const musicProfile = {
-  style: 'cinematic-privateer',
-  tempoMs: 225,
-  layers: ['war-drum', 'deck-snare', 'sea-hat', 'rolling-bass', 'marimba-arp', 'brass-stab', 'shanty-lead', 'storm-hit'],
+  style: 'arcade-high-seas',
+  tempoMs: 190,
+  layers: ['power-kick', 'racing-snare', 'bright-hat', 'pulse-bass', 'hero-arp', 'brass-hit', 'adventure-lead', 'victory-countermelody'],
 };
 let missionTimer;
 const ui = {
@@ -490,23 +490,28 @@ function playHat(delay = 0) {
 
 function scheduleMusic() {
   if (!audioContext || musicTimer) return;
-  const bass = [55, 55, 65.41, 73.42, 82.41, 73.42, 65.41, 55, 61.74, 98, 92.5, 73.42, 65.41, 82.41, 110, 98];
-  const arp = [220, 261.63, 329.63, 392, 440, 392, 329.63, 261.63, 246.94, 293.66, 369.99, 440, 493.88, 440, 369.99, 293.66];
-  const shanty = [440, 523.25, 659.25, 587.33, 493.88, 587.33, 698.46, 659.25];
-  const brass = [110, 146.83, 164.81, 196];
+  const bassBars = [
+    [55, 55, 82.41, 55, 65.41, 65.41, 98, 65.41, 73.42, 73.42, 110, 73.42, 82.41, 98, 110, 123.47],
+    [55, 82.41, 110, 82.41, 49, 73.42, 98, 73.42, 65.41, 98, 130.81, 98, 73.42, 110, 146.83, 164.81],
+  ];
+  const arpBars = [
+    [220, 329.63, 440, 523.25, 261.63, 392, 523.25, 659.25, 293.66, 440, 587.33, 698.46, 329.63, 493.88, 659.25, 783.99],
+    [329.63, 493.88, 659.25, 783.99, 293.66, 440, 587.33, 698.46, 261.63, 392, 523.25, 659.25, 293.66, 440, 587.33, 880],
+  ];
+  const heroLead = [659.25, 783.99, 880, 783.99, 698.46, 659.25, 587.33, 659.25, 783.99, 880, 987.77, 880, 783.99, 698.46, 659.25, 783.99];
+  const brass = [110, 130.81, 146.83, 164.81];
   const playPhrase = () => {
     if (!game.started || game.ended) return;
     const step = musicStep % 16;
     const bar = Math.floor(musicStep / 16);
     const swell = 1 + Math.min(0.35, game.speed / 40) + (game.ultimateCharge >= 100 ? 0.12 : 0);
     playHat(0);
-    if (step % 4 === 0) playDrum(108 + (bar % 2) * 10, 0.16, 0.12 * swell);
-    if (step === 4 || step === 12) playDrum(185, 0.1, 0.074 * swell, 0.02);
-    if (step === 7 || step === 15) playDrum(84, 0.09, 0.055 * swell, 0.06);
-    if (step === 14 && bar % 2 === 1) playDrum(58, 0.18, 0.07, 0.03);
-    playTone(bass[step] * (bar % 4 === 3 && step > 11 ? 1.12 : 1), 0.2, (step % 4 === 0 ? 0.095 : 0.061) * swell, 'sawtooth');
-    playTone(arp[(step + bar * 3) % arp.length], 0.095, 0.027 * swell, bar % 2 ? 'triangle' : 'square', 0.052);
-    if (step % 8 === 0 || step === 10) playTone(shanty[(Math.floor(musicStep / 8) + bar) % shanty.length], 0.18, 0.049 * swell, 'triangle', 0.1);
+    if (step % 4 === 0 || step === 10) playDrum(118 + (bar % 2) * 10, 0.14, 0.13 * swell);
+    if (step === 4 || step === 12) playDrum(205, 0.09, 0.082 * swell, 0.015);
+    if (step === 7 || step === 15) playDrum(92, 0.08, 0.06 * swell, 0.045);
+    playTone(bassBars[bar % bassBars.length][step], 0.17, (step % 4 === 0 ? 0.09 : 0.055) * swell, 'sawtooth');
+    playTone(arpBars[Math.floor(bar / 2) % arpBars.length][step], 0.085, 0.025 * swell, step % 2 ? 'triangle' : 'square', 0.04);
+    if (step % 4 === 0 || (bar % 4 === 3 && step % 2 === 0)) playTone(heroLead[(step + bar * 4) % heroLead.length], 0.16, 0.047 * swell, 'triangle', 0.07);
     if (step === 0 || (step === 8 && bar % 2 === 0)) playTone(brass[bar % brass.length], 0.28, 0.052 * swell, 'sawtooth', 0.015);
     musicStep += 1;
   };
@@ -569,14 +574,25 @@ function fireCannon(owner, hostile = false) {
 function collectItem(item) {
   item.collected = true;
   item.group.visible = false;
-  const effects = {
-    repair: () => { game.health = Math.min(100, game.health + 28); chargeUltimate(6); showDanger('수리 키트 — 선체 회복!'); },
-    rum: () => { game.score += 300; chargeUltimate(8); showDanger('럼주 보급 — 항해 점수 +300'); },
-    chart: () => { game.score += 450; chargeUltimate(10); showDanger('비밀 해도 — 항로 발견!'); },
-    powder: () => { game.supplies += 1; chargeUltimate(15); showDanger('화약 상자 — 대포 재장전 강화!'); },
-  };
-  effects[item.type]();
-  spawnSplash(item.group.position, 0xffd36b, 2);
+  // Keep pickup work allocation-free on the render frame. Creating a temporary
+  // dispatch object and first-use 3D particles caused visible mobile frame spikes.
+  if (item.type === 'repair') {
+    game.health = Math.min(100, game.health + 28);
+    chargeUltimate(6);
+    showDanger('수리 키트 — 선체 회복!');
+  } else if (item.type === 'rum') {
+    game.score += 300;
+    chargeUltimate(8);
+    showDanger('럼주 보급 — 항해 점수 +300');
+  } else if (item.type === 'chart') {
+    game.score += 450;
+    chargeUltimate(10);
+    showDanger('비밀 해도 — 항로 발견!');
+  } else {
+    game.supplies += 1;
+    chargeUltimate(15);
+    showDanger('화약 상자 — 대포 재장전 강화!');
+  }
 }
 
 function chargeUltimate(amount) {

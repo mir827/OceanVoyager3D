@@ -85,7 +85,7 @@ try {
     cannonballs: window.__oceanVoyager.cannonballs.filter((ball) => !ball.hostile).length,
     audio: window.__oceanVoyager.audio,
   }));
-  if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active || after.audio.context !== 'running' || after.audio.gain < 0.9 || after.audio.style !== 'cinematic-privateer' || after.audio.tempoMs > 240 || after.audio.layers < 8 || after.audio.step < 4) {
+  if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active || after.audio.context !== 'running' || after.audio.gain < 0.9 || after.audio.style !== 'arcade-high-seas' || after.audio.tempoMs !== 190 || after.audio.layers < 8 || after.audio.step < 4) {
     throw new Error(`Gameplay input failed: ${JSON.stringify({ before, after })}`);
   }
 
