@@ -56,14 +56,98 @@ let musicGain;
 let musicTimer;
 let musicMuted = false;
 let musicStep = 0;
+let hatNoiseBuffer;
+let lastCannonSoundAt = -1;
 const musicProfile = {
-  style: 'action-game',
-  tempoMs: 250,
-  layers: ['kick', 'snare', 'hat', 'bass', 'arp', 'lead-stab'],
+  style: 'cinematic-privateer',
+  tempoMs: 225,
+  layers: ['war-drum', 'deck-snare', 'sea-hat', 'rolling-bass', 'marimba-arp', 'brass-stab', 'shanty-lead', 'storm-hit'],
 };
 let missionTimer;
+const ui = {
+  audioToggle: document.querySelector('#audio-toggle'),
+  danger: document.querySelector('#danger'),
+  endScreen: document.querySelector('#end-screen'),
+  endKicker: document.querySelector('#end-kicker'),
+  endTitle: document.querySelector('#end-title'),
+  endMessage: document.querySelector('#end-message'),
+  fireButton: document.querySelector('#fire-button'),
+  heading: document.querySelector('#heading'),
+  health: document.querySelector('#health'),
+  healthBar: document.querySelector('#health-bar'),
+  joystick: document.querySelector('#joystick'),
+  joystickKnob: document.querySelector('#joystick-knob'),
+  mission: document.querySelector('#mission'),
+  missionTitle: document.querySelector('#mission-title'),
+  missionDetail: document.querySelector('#mission-detail'),
+  needle: document.querySelector('#needle'),
+  restartButton: document.querySelector('#restart-button'),
+  score: document.querySelector('#score'),
+  startButton: document.querySelector('#start-button'),
+  startScreen: document.querySelector('#start-screen'),
+  supplies: document.querySelector('#supplies'),
+  treasure: document.querySelector('#treasure'),
+  ultimate: document.querySelector('#ultimate'),
+  ultimateBar: document.querySelector('#ultimate-bar'),
+  ultimateButton: document.querySelector('#ultimate-button'),
+  ultimateStat: document.querySelector('.ultimate-stat'),
+};
 
-const oceanGeo = new THREE.PlaneGeometry(650, 650, 128, 128);
+const particleGeometry = {
+  splash: new THREE.SphereGeometry(1, 5, 5),
+  spark: new THREE.SphereGeometry(1, 6, 6),
+  trail: new THREE.SphereGeometry(1, 6, 6),
+  ring: new THREE.TorusGeometry(1, 0.04, 8, 36),
+  muzzle: new THREE.ConeGeometry(0.34, 1.7, 8),
+  cannonFriendly: new THREE.SphereGeometry(0.34, 10, 10),
+  cannonHostile: new THREE.SphereGeometry(0.24, 10, 10),
+};
+const particleMaterialCache = new Map();
+const MAX_PARTICLES = 140;
+
+function cachedParticleMaterial(color, roughness = 0.55, emissiveIntensity = 0, transparent = false) {
+  const key = `${color}:${roughness}:${emissiveIntensity}:${transparent}`;
+  if (!particleMaterialCache.has(key)) {
+    const mat = material(color, roughness);
+    if (emissiveIntensity) {
+      mat.emissive = new THREE.Color(color);
+      mat.emissiveIntensity = emissiveIntensity;
+    }
+    mat.transparent = transparent;
+    particleMaterialCache.set(key, mat);
+  }
+  const cached = particleMaterialCache.get(key);
+  return transparent ? cached.clone() : cached;
+}
+
+function addParticle(particle) {
+  particle.maxLife ??= particle.life;
+  particles.push(particle);
+  while (particles.length > MAX_PARTICLES) {
+    const expired = particles.shift();
+    if (expired?.object) scene.remove(expired.object);
+  }
+}
+
+function scaledEffectCount(count, minimum = 2) {
+  const pressure = particles.length / MAX_PARTICLES;
+  if (pressure > 0.82) return Math.max(minimum, Math.ceil(count * 0.22));
+  if (pressure > 0.62) return Math.max(minimum, Math.ceil(count * 0.45));
+  return count;
+}
+
+function particleMesh(geometry, mat, position, scale = 1, rotation = [0, 0, 0]) {
+  const object = new THREE.Mesh(geometry, mat);
+  object.position.copy(position);
+  object.rotation.set(...rotation);
+  object.scale.setScalar(scale);
+  object.castShadow = false;
+  object.receiveShadow = false;
+  scene.add(object);
+  return object;
+}
+
+const oceanGeo = new THREE.PlaneGeometry(650, 650, 80, 80);
 oceanGeo.rotateX(-Math.PI / 2);
 const oceanBase = oceanGeo.attributes.position.array.slice();
 const ocean = new THREE.Mesh(
@@ -269,9 +353,12 @@ const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xfff2
 scene.add(stars);
 
 function spawnSplash(position, color = 0xbcecff, count = 10) {
-  for (let i = 0; i < count; i += 1) {
-    const drop = mesh(new THREE.SphereGeometry(0.08 + Math.random() * 0.12, 5, 5), material(color), scene, [position.x, 0.4, position.z]);
-    particles.push({ object: drop, velocity: new THREE.Vector3((Math.random() - 0.5) * 5, 2 + Math.random() * 4, (Math.random() - 0.5) * 5), life: 0.8 + Math.random() * 0.6 });
+  const mat = cachedParticleMaterial(color, 0.72);
+  const actualCount = scaledEffectCount(count);
+  for (let i = 0; i < actualCount; i += 1) {
+    const life = 0.8 + Math.random() * 0.6;
+    const drop = particleMesh(particleGeometry.splash, mat, new THREE.Vector3(position.x, 0.4, position.z), 0.08 + Math.random() * 0.12);
+    addParticle({ object: drop, velocity: new THREE.Vector3((Math.random() - 0.5) * 5, 2 + Math.random() * 4, (Math.random() - 0.5) * 5), life, maxLife: life, baseScale: drop.scale.x });
   }
 }
 
@@ -279,42 +366,53 @@ function spawnExplosion(position, radius = 1, count = 24) {
   const burst = position.clone();
   burst.y = Math.max(1.2, burst.y);
   const colors = [0xfff0a6, 0xff9b43, 0xe64f35, 0x2f3740];
-  for (let i = 0; i < count; i += 1) {
+  const actualCount = scaledEffectCount(count, 4);
+  for (let i = 0; i < actualCount; i += 1) {
     const color = colors[i % colors.length];
-    const spark = mesh(new THREE.SphereGeometry((0.12 + Math.random() * 0.26) * radius, 6, 6), material(color, 0.45), scene, [burst.x, burst.y, burst.z]);
-    spark.material.emissive = new THREE.Color(color);
-    spark.material.emissiveIntensity = i % 4 === 3 ? 0.2 : 1.2;
-    spark.material.transparent = true;
+    const baseScale = (0.12 + Math.random() * 0.26) * radius;
+    const spark = particleMesh(
+      particleGeometry.spark,
+      cachedParticleMaterial(color, 0.45, i % 4 === 3 ? 0.2 : 1.2, true),
+      burst,
+      baseScale,
+    );
     const angle = Math.random() * Math.PI * 2;
     const force = (5 + Math.random() * 11) * radius;
-    particles.push({
+    addParticle({
       object: spark,
       velocity: new THREE.Vector3(Math.cos(angle) * force, 4 + Math.random() * 8, Math.sin(angle) * force),
       life: 0.75 + Math.random() * 0.8,
       maxLife: 1.35,
+      baseScale,
     });
   }
   for (let i = 0; i < 2; i += 1) {
-    const ring = mesh(new THREE.TorusGeometry(radius * (1.5 + i * 0.8), 0.06 * radius, 8, 36), material(i ? 0xffe4a2 : 0xff673d, 0.3), scene, [burst.x, 0.45 + i * 0.25, burst.z], [Math.PI / 2, 0, 0]);
-    ring.material.emissive = new THREE.Color(i ? 0xffd26a : 0xff5533);
-    ring.material.emissiveIntensity = 1.5;
-    ring.material.transparent = true;
-    particles.push({ object: ring, velocity: new THREE.Vector3(0, 0.25, 0), life: 0.7, maxLife: 0.7, expand: 1.9 + i * 0.7 });
+    const ring = particleMesh(
+      particleGeometry.ring,
+      cachedParticleMaterial(i ? 0xffe4a2 : 0xff673d, 0.3, 1.5, true),
+      new THREE.Vector3(burst.x, 0.45 + i * 0.25, burst.z),
+      radius * (1.5 + i * 0.8),
+      [Math.PI / 2, 0, 0],
+    );
+    addParticle({ object: ring, velocity: new THREE.Vector3(0, 0.25, 0), life: 0.7, maxLife: 0.7, expand: 1.9 + i * 0.7 });
   }
   const light = new THREE.PointLight(0xff9b45, 45 * radius, 28 * radius, 2);
   light.position.copy(burst);
   scene.add(light);
-  particles.push({ object: light, velocity: new THREE.Vector3(), life: 0.32, maxLife: 0.32 });
+  addParticle({ object: light, velocity: new THREE.Vector3(), life: 0.32, maxLife: 0.32 });
 }
 
 function spawnMuzzleFlash(position, direction, hostile = false) {
   const flashColor = hostile ? 0xe84d38 : 0xffb25a;
-  const flash = mesh(new THREE.ConeGeometry(0.34, 1.7, 8), glowMaterial(flashColor, 0.28, 2), scene, [position.x, position.y, position.z]);
+  const flash = particleMesh(
+    particleGeometry.muzzle,
+    cachedParticleMaterial(flashColor, 0.28, 2, true),
+    new THREE.Vector3(position.x, position.y, position.z),
+  );
   flash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
   flash.position.addScaledVector(direction, 1.3);
-  flash.material.transparent = true;
-  particles.push({ object: flash, velocity: direction.clone().multiplyScalar(5), life: 0.16, maxLife: 0.16 });
-  spawnSplash(position, hostile ? 0xd54e3b : 0xffb66c, hostile ? 5 : 11);
+  addParticle({ object: flash, velocity: direction.clone().multiplyScalar(5), life: 0.16, maxLife: 0.16 });
+  spawnSplash(position, hostile ? 0xd54e3b : 0xffb66c, hostile ? 2 : 2);
 }
 
 function playTone(frequency, duration, volume = 0.035, type = 'sine', delay = 0) {
@@ -350,16 +448,19 @@ function playDrum(frequency, duration, volume = 0.08, delay = 0) {
 function playHat(delay = 0) {
   if (!audioContext || musicMuted) return;
   const start = audioContext.currentTime + delay;
-  const buffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.08, audioContext.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < data.length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  if (!hatNoiseBuffer) {
+    hatNoiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.08, audioContext.sampleRate);
+    const data = hatNoiseBuffer.getChannelData(0);
+    for (let i = 0; i < data.length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  }
   const noise = audioContext.createBufferSource();
   const filter = audioContext.createBiquadFilter();
   const gain = audioContext.createGain();
-  noise.buffer = buffer;
+  noise.buffer = hatNoiseBuffer;
+  noise.playbackRate.setValueAtTime(0.9 + Math.random() * 0.2, start);
   filter.type = 'highpass';
   filter.frequency.setValueAtTime(6200, start);
-  gain.gain.setValueAtTime(0.035, start);
+  gain.gain.setValueAtTime(0.028, start);
   gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.08);
   noise.connect(filter).connect(gain).connect(musicGain);
   noise.start(start);
@@ -367,19 +468,24 @@ function playHat(delay = 0) {
 
 function scheduleMusic() {
   if (!audioContext || musicTimer) return;
-  const bass = [55, 55, 65.41, 73.42, 82.41, 73.42, 65.41, 55, 55, 98, 87.31, 73.42, 65.41, 73.42, 82.41, 98];
+  const bass = [55, 55, 65.41, 73.42, 82.41, 73.42, 65.41, 55, 61.74, 98, 92.5, 73.42, 65.41, 82.41, 110, 98];
   const arp = [220, 261.63, 329.63, 392, 440, 392, 329.63, 261.63, 246.94, 293.66, 369.99, 440, 493.88, 440, 369.99, 293.66];
-  const lead = [440, 523.25, 659.25, 587.33];
+  const shanty = [440, 523.25, 659.25, 587.33, 493.88, 587.33, 698.46, 659.25];
+  const brass = [110, 146.83, 164.81, 196];
   const playPhrase = () => {
     if (!game.started || game.ended) return;
     const step = musicStep % 16;
+    const bar = Math.floor(musicStep / 16);
+    const swell = 1 + Math.min(0.35, game.speed / 40) + (game.ultimateCharge >= 100 ? 0.12 : 0);
     playHat(0);
-    if (step % 4 === 0) playDrum(118, 0.13, 0.13);
-    if (step === 4 || step === 12) playDrum(185, 0.1, 0.085, 0.02);
-    if (step === 7 || step === 15) playDrum(92, 0.08, 0.06, 0.06);
-    playTone(bass[step], 0.22, step % 4 === 0 ? 0.105 : 0.072, 'sawtooth');
-    playTone(arp[step], 0.105, 0.035, 'square', 0.055);
-    if (step % 8 === 0 || step === 10) playTone(lead[Math.floor(musicStep / 8) % lead.length], 0.18, 0.055, 'triangle', 0.1);
+    if (step % 4 === 0) playDrum(108 + (bar % 2) * 10, 0.16, 0.12 * swell);
+    if (step === 4 || step === 12) playDrum(185, 0.1, 0.074 * swell, 0.02);
+    if (step === 7 || step === 15) playDrum(84, 0.09, 0.055 * swell, 0.06);
+    if (step === 14 && bar % 2 === 1) playDrum(58, 0.18, 0.07, 0.03);
+    playTone(bass[step] * (bar % 4 === 3 && step > 11 ? 1.12 : 1), 0.2, (step % 4 === 0 ? 0.095 : 0.061) * swell, 'sawtooth');
+    playTone(arp[(step + bar * 3) % arp.length], 0.095, 0.027 * swell, bar % 2 ? 'triangle' : 'square', 0.052);
+    if (step % 8 === 0 || step === 10) playTone(shanty[(Math.floor(musicStep / 8) + bar) % shanty.length], 0.18, 0.049 * swell, 'triangle', 0.1);
+    if (step === 0 || (step === 8 && bar % 2 === 0)) playTone(brass[bar % brass.length], 0.28, 0.052 * swell, 'sawtooth', 0.015);
     musicStep += 1;
   };
   musicStep = 0;
@@ -397,14 +503,15 @@ async function startAudio() {
   }
   if (audioContext.state !== 'running') await audioContext.resume();
   scheduleMusic();
-  const button = document.querySelector('#audio-toggle');
-  button.textContent = '♫';
-  button.classList.remove('muted');
-  button.setAttribute('aria-label', '배경 음악 끄기');
+  ui.audioToggle.textContent = '♫';
+  ui.audioToggle.classList.remove('muted');
+  ui.audioToggle.setAttribute('aria-label', '배경 음악 끄기');
 }
 
 function playCannonSound() {
   if (!audioContext || musicMuted) return;
+  if (audioContext.currentTime - lastCannonSoundAt < 0.12) return;
+  lastCannonSoundAt = audioContext.currentTime;
   const oscillator = audioContext.createOscillator();
   const gain = audioContext.createGain();
   oscillator.type = 'sawtooth';
@@ -420,7 +527,11 @@ function playCannonSound() {
 function fireCannon(owner, hostile = false) {
   if (owner === player && (!game.started || game.ended || game.cannonCooldown > 0)) return false;
   const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(owner.quaternion).normalize();
-  const ball = mesh(new THREE.SphereGeometry(hostile ? 0.24 : 0.34, 10, 10), glowMaterial(hostile ? 0xd6442f : 0xff7c35, 0.18, hostile ? 0.7 : 1.8), scene);
+  const ball = mesh(
+    hostile ? particleGeometry.cannonHostile : particleGeometry.cannonFriendly,
+    cachedParticleMaterial(hostile ? 0xd6442f : 0xff7c35, 0.18, hostile ? 0.7 : 1.8),
+    scene,
+  );
   ball.position.copy(owner.position).addScaledVector(direction, 5).add(new THREE.Vector3(0, 2.2, 0));
   const ember = new THREE.PointLight(hostile ? 0xd6442f : 0xff863d, hostile ? 8 : 20, hostile ? 7 : 12, 2);
   ball.add(ember);
@@ -443,7 +554,7 @@ function collectItem(item) {
     powder: () => { game.supplies += 1; chargeUltimate(15); showDanger('화약 상자 — 대포 재장전 강화!'); },
   };
   effects[item.type]();
-  spawnSplash(item.group.position, 0xffd36b, 18);
+  spawnSplash(item.group.position, 0xffd36b, 4);
 }
 
 function chargeUltimate(amount) {
@@ -455,7 +566,7 @@ function sinkEnemy(enemy, reward = true) {
   enemy.ship.visible = false;
   game.score += 500;
   if (reward) chargeUltimate(18);
-  spawnExplosion(enemy.ship.position, 1.35, 30);
+  spawnExplosion(enemy.ship.position, 1.35, 18);
   showDanger('해적선 격침!');
 }
 
@@ -463,7 +574,7 @@ function useUltimate() {
   if (!game.started || game.ended || game.ultimateCharge < 100) return false;
   game.ultimateCharge = 0;
   showDanger('폭풍 포격 — 전방위 일제사격!');
-  spawnExplosion(player.position, 2.2, 46);
+  spawnExplosion(player.position, 2.2, 26);
   if (audioContext && !musicMuted) {
     playDrum(132, 0.32, 0.16);
     playTone(392, 0.24, 0.09, 'square', 0.02);
@@ -475,7 +586,7 @@ function useUltimate() {
     const distance = enemy.ship.position.distanceTo(player.position);
     if (distance > 82) continue;
     enemy.health -= distance < 82 ? 3 : 2;
-    spawnExplosion(enemy.ship.position, 1.05, 22);
+    spawnExplosion(enemy.ship.position, 1.05, 12);
     if (enemy.health <= 0) sinkEnemy(enemy, false);
   }
 
@@ -494,27 +605,25 @@ function damage(amount, message) {
   game.health = Math.max(0, game.health - amount);
   game.hitCooldown = 0.75;
   showDanger(message);
-  spawnSplash(player.position, 0xff8a5c, 16);
+  spawnSplash(player.position, 0xff8a5c, 8);
   if (game.health <= 0) endGame(false);
 }
 
 let dangerTimer;
 function showDanger(text) {
-  const element = document.querySelector('#danger');
-  element.textContent = text;
-  element.classList.add('show');
+  ui.danger.textContent = text;
+  ui.danger.classList.add('show');
   clearTimeout(dangerTimer);
-  dangerTimer = setTimeout(() => element.classList.remove('show'), 1600);
+  dangerTimer = setTimeout(() => ui.danger.classList.remove('show'), 1600);
 }
 
 function expandMission(duration = 5000) {
-  const element = document.querySelector('#mission');
-  element.classList.remove('collapsed');
-  element.setAttribute('aria-expanded', 'true');
+  ui.mission.classList.remove('collapsed');
+  ui.mission.setAttribute('aria-expanded', 'true');
   clearTimeout(missionTimer);
   missionTimer = window.setTimeout(() => {
-    element.classList.add('collapsed');
-    element.setAttribute('aria-expanded', 'false');
+    ui.mission.classList.add('collapsed');
+    ui.mission.setAttribute('aria-expanded', 'false');
   }, duration);
 }
 
@@ -524,11 +633,11 @@ function collectTreasure(island) {
   game.treasures += 1;
   game.score += 750;
   chargeUltimate(12);
-  spawnSplash(island.group.position, 0xffc45d, 24);
+  spawnSplash(island.group.position, 0xffc45d, 12);
   showDanger(`보물 발견 — ${game.treasures} / 5`);
   if (game.treasures === islands.length) {
-    document.querySelector('#mission-title').textContent = '왕실 항구로 귀환하십시오';
-    document.querySelector('#mission-detail').textContent = '남쪽의 황금 부두가 당신의 귀환을 기다립니다.';
+    ui.missionTitle.textContent = '왕실 항구로 귀환하십시오';
+    ui.missionDetail.textContent = '남쪽의 황금 부두가 당신의 귀환을 기다립니다.';
     expandMission();
   }
 }
@@ -536,13 +645,12 @@ function collectTreasure(island) {
 function endGame(victory) {
   game.ended = true;
   game.speed = 0;
-  const screen = document.querySelector('#end-screen');
-  document.querySelector('#end-kicker').textContent = victory ? 'VOYAGE COMPLETE' : 'THE SEA CLAIMS ANOTHER';
-  document.querySelector('#end-title').textContent = victory ? '전설의 항해자' : '침몰한 꿈';
-  document.querySelector('#end-message').textContent = victory
+  ui.endKicker.textContent = victory ? 'VOYAGE COMPLETE' : 'THE SEA CLAIMS ANOTHER';
+  ui.endTitle.textContent = victory ? '전설의 항해자' : '침몰한 꿈';
+  ui.endMessage.textContent = victory
     ? `모든 보물을 되찾았습니다. 항해 점수 ${String(Math.round(game.score)).padStart(4, '0')}점으로 왕실의 전설이 되었습니다.`
     : '선체가 파괴되었습니다. 바람과 파도를 읽어 다시 도전하십시오.';
-  screen.classList.remove('hidden');
+  ui.endScreen.classList.remove('hidden');
 }
 
 function updateOcean(time) {
@@ -553,7 +661,6 @@ function updateOcean(time) {
     positions[i + 1] = Math.sin(x * 0.095 + time * 1.2) * 0.38 + Math.cos(z * 0.075 + time * 0.85) * 0.32;
   }
   oceanGeo.attributes.position.needsUpdate = true;
-  oceanGeo.computeVertexNormals();
 }
 
 function updatePlayer(dt, time) {
@@ -625,12 +732,20 @@ function updateCannonballs(dt) {
     ball.trailTimer -= dt;
     ball.velocity.y -= 2.5 * dt;
     ball.object.position.addScaledVector(ball.velocity, dt);
-    if (ball.trailTimer <= 0) {
-      ball.trailTimer = ball.hostile ? 0.09 : 0.045;
+    if (ball.trailTimer <= 0 && particles.length < MAX_PARTICLES * 0.58) {
+      ball.trailTimer = ball.hostile ? 0.18 : 0.2;
       const trailColor = ball.hostile ? 0xbf3b32 : 0xffa45a;
-      const trail = mesh(new THREE.SphereGeometry(ball.hostile ? 0.11 : 0.16, 6, 6), glowMaterial(trailColor, 0.55, ball.hostile ? 0.5 : 1.1), scene, [ball.object.position.x, ball.object.position.y, ball.object.position.z]);
-      trail.material.transparent = true;
-      particles.push({ object: trail, velocity: new THREE.Vector3((Math.random() - 0.5) * 1.8, 0.6 + Math.random() * 1.4, (Math.random() - 0.5) * 1.8), life: ball.hostile ? 0.4 : 0.62, maxLife: ball.hostile ? 0.4 : 0.62 });
+      const life = ball.hostile ? 0.4 : 0.62;
+      const baseScale = ball.hostile ? 0.11 : 0.16;
+      const trail = particleMesh(
+        particleGeometry.trail,
+        cachedParticleMaterial(trailColor, 0.55, ball.hostile ? 0.5 : 1.1, true),
+        ball.object.position,
+        baseScale,
+      );
+      addParticle({ object: trail, velocity: new THREE.Vector3((Math.random() - 0.5) * 1.8, 0.6 + Math.random() * 1.4, (Math.random() - 0.5) * 1.8), life, maxLife: life, baseScale });
+    } else if (ball.trailTimer <= 0) {
+      ball.trailTimer = ball.hostile ? 0.22 : 0.24;
     }
     if (ball.hostile && ball.object.position.distanceTo(player.position) < 3.8) {
       damage(14, '해적의 포격!');
@@ -641,15 +756,15 @@ function updateCannonballs(dt) {
           enemy.health -= 1;
           chargeUltimate(7);
           ball.life = 0;
-          spawnExplosion(enemy.ship.position, enemy.health <= 0 ? 1.55 : 1.05, enemy.health <= 0 ? 44 : 30);
+          spawnExplosion(enemy.ship.position, enemy.health <= 0 ? 1.55 : 1.05, enemy.health <= 0 ? 20 : 12);
           if (enemy.health <= 0) sinkEnemy(enemy);
           break;
         }
       }
     }
     if (ball.object.position.y < 0 || ball.life <= 0) {
-      spawnSplash(ball.object.position, ball.hostile ? 0xff7b64 : 0xffcf8a, ball.hostile ? 8 : 12);
-      if (!ball.hostile) spawnExplosion(ball.object.position, 0.52, 14);
+      spawnSplash(ball.object.position, ball.hostile ? 0xff7b64 : 0xffcf8a, ball.hostile ? 5 : 6);
+      if (!ball.hostile) spawnExplosion(ball.object.position, 0.52, 4);
       scene.remove(ball.object);
       cannonballs.splice(i, 1);
     }
@@ -680,7 +795,10 @@ function updateParticles(dt) {
       particle.velocity.y -= 7 * dt;
       particle.object.position.addScaledVector(particle.velocity, dt);
       if (particle.expand) particle.object.scale.addScalar(particle.expand * dt);
-      else particle.object.scale.setScalar(Math.max(0.01, particle.life));
+      else {
+        const lifeRatio = Math.max(0, particle.life / (particle.maxLife ?? 1));
+        particle.object.scale.setScalar(Math.max(0.01, (particle.baseScale ?? 1) * lifeRatio));
+      }
       if (particle.object.material?.transparent) particle.object.material.opacity = Math.max(0, particle.life / (particle.maxLife ?? 1));
     }
     if (particle.life <= 0) {
@@ -699,18 +817,18 @@ function updateCamera(dt) {
 }
 
 function updateHUD() {
-  document.querySelector('#health').textContent = Math.ceil(game.health);
-  document.querySelector('#health-bar').style.width = `${game.health}%`;
-  document.querySelector('#treasure').textContent = game.treasures;
-  document.querySelector('#score').textContent = String(Math.round(game.score)).padStart(4, '0');
-  document.querySelector('#supplies').textContent = game.supplies;
-  document.querySelector('#ultimate').textContent = `${Math.round(game.ultimateCharge)}%`;
-  document.querySelector('#ultimate-bar').style.width = `${game.ultimateCharge}%`;
-  document.querySelector('.ultimate-stat').classList.toggle('ready', game.ultimateCharge >= 100);
-  document.querySelector('#ultimate-button').classList.toggle('ready', game.ultimateCharge >= 100);
+  ui.health.textContent = Math.ceil(game.health);
+  ui.healthBar.style.width = `${game.health}%`;
+  ui.treasure.textContent = game.treasures;
+  ui.score.textContent = String(Math.round(game.score)).padStart(4, '0');
+  ui.supplies.textContent = game.supplies;
+  ui.ultimate.textContent = `${Math.round(game.ultimateCharge)}%`;
+  ui.ultimateBar.style.width = `${game.ultimateCharge}%`;
+  ui.ultimateStat.classList.toggle('ready', game.ultimateCharge >= 100);
+  ui.ultimateButton.classList.toggle('ready', game.ultimateCharge >= 100);
   const degrees = ((-THREE.MathUtils.radToDeg(game.heading) % 360) + 360) % 360;
-  document.querySelector('#needle').style.transform = `rotate(${degrees}deg)`;
-  document.querySelector('#heading').textContent = `${String(Math.round(degrees)).padStart(3, '0')}°`;
+  ui.needle.style.transform = `rotate(${degrees}deg)`;
+  ui.heading.textContent = `${String(Math.round(degrees)).padStart(3, '0')}°`;
 }
 
 function updateSky(time) {
@@ -752,21 +870,21 @@ function resetGame() {
   islands.forEach((island) => { island.collected = false; island.beacon.visible = true; });
   enemies.forEach((enemy) => { enemy.active = true; enemy.health = enemy.maxHealth; enemy.ship.visible = true; enemy.ship.position.copy(enemy.spawn); });
   items.forEach((item) => { item.collected = false; item.group.visible = true; item.group.position.copy(item.spawn); });
-  document.querySelector('#mission-title').textContent = '잃어버린 왕관의 보물 5개를 찾으십시오';
-  document.querySelector('#mission-detail').textContent = '빛나는 섬 가까이 항해하면 보물을 발견할 수 있습니다.';
+  ui.missionTitle.textContent = '잃어버린 왕관의 보물 5개를 찾으십시오';
+  ui.missionDetail.textContent = '빛나는 섬 가까이 항해하면 보물을 발견할 수 있습니다.';
   expandMission();
-  document.querySelector('#start-screen').classList.add('hidden');
-  document.querySelector('#end-screen').classList.add('hidden');
+  ui.startScreen.classList.add('hidden');
+  ui.endScreen.classList.add('hidden');
   showDanger('돛을 올려라 — 항해 시작!');
   startAudio().catch(() => showDanger('소리 버튼을 눌러 음악을 시작하세요'));
 }
 
-document.querySelector('#start-button').addEventListener('click', resetGame);
-document.querySelector('#restart-button').addEventListener('click', resetGame);
-document.querySelector('#mission').addEventListener('click', () => {
-  if (game.started && document.querySelector('#mission').classList.contains('collapsed')) expandMission();
+ui.startButton.addEventListener('click', resetGame);
+ui.restartButton.addEventListener('click', resetGame);
+ui.mission.addEventListener('click', () => {
+  if (game.started && ui.mission.classList.contains('collapsed')) expandMission();
 });
-document.querySelector('#mission').addEventListener('keydown', (event) => {
+ui.mission.addEventListener('keydown', (event) => {
   if (!['Enter', 'Space'].includes(event.code)) return;
   event.preventDefault();
   if (game.started) expandMission();
@@ -780,17 +898,17 @@ window.addEventListener('keydown', (event) => {
 window.addEventListener('keyup', (event) => keys.delete(event.code));
 window.addEventListener('blur', () => keys.clear());
 
-document.querySelector('#fire-button').addEventListener('pointerdown', (event) => {
+ui.fireButton.addEventListener('pointerdown', (event) => {
   event.preventDefault();
   fireCannon(player);
 });
-document.querySelector('#ultimate-button').addEventListener('pointerdown', (event) => {
+ui.ultimateButton.addEventListener('pointerdown', (event) => {
   event.preventDefault();
   useUltimate();
 });
 
-const joystickElement = document.querySelector('#joystick');
-const joystickKnob = document.querySelector('#joystick-knob');
+const joystickElement = ui.joystick;
+const joystickKnob = ui.joystickKnob;
 
 function updateJoystick(event) {
   const bounds = joystickElement.getBoundingClientRect();
@@ -829,13 +947,12 @@ joystickElement.addEventListener('pointermove', (event) => {
 joystickElement.addEventListener('pointerup', releaseJoystick);
 joystickElement.addEventListener('pointercancel', releaseJoystick);
 
-document.querySelector('#audio-toggle').addEventListener('click', () => {
+ui.audioToggle.addEventListener('click', () => {
   musicMuted = !musicMuted;
-  const button = document.querySelector('#audio-toggle');
-  button.classList.toggle('muted', musicMuted);
-  button.textContent = musicMuted ? '♩' : '♫';
-  button.setAttribute('aria-pressed', String(musicMuted));
-  button.setAttribute('aria-label', musicMuted ? '배경 음악 켜기' : '배경 음악 끄기');
+  ui.audioToggle.classList.toggle('muted', musicMuted);
+  ui.audioToggle.textContent = musicMuted ? '♩' : '♫';
+  ui.audioToggle.setAttribute('aria-pressed', String(musicMuted));
+  ui.audioToggle.setAttribute('aria-label', musicMuted ? '배경 음악 켜기' : '배경 음악 끄기');
   if (!musicMuted) startAudio().catch(() => {});
 });
 
