@@ -44,8 +44,10 @@ try {
     collapsed: document.querySelector('#mission').classList.contains('collapsed'),
     expanded: document.querySelector('#mission').getAttribute('aria-expanded'),
     detailHeight: document.querySelector('#mission-detail').getBoundingClientRect().height,
+    box: document.querySelector('#mission').getBoundingClientRect().toJSON(),
+    labelDisplay: getComputedStyle(document.querySelector('#mission span')).display,
   }));
-  if (!missionCollapsed.collapsed || missionCollapsed.expanded !== 'false' || missionCollapsed.detailHeight > 1) {
+  if (!missionCollapsed.collapsed || missionCollapsed.expanded !== 'false' || missionCollapsed.detailHeight > 1 || missionCollapsed.box.width > 210 || missionCollapsed.box.height > 30 || missionCollapsed.labelDisplay !== 'none') {
     throw new Error(`Mission did not collapse after 5 seconds: ${JSON.stringify(missionCollapsed)}`);
   }
 
@@ -67,6 +69,7 @@ try {
   if (!missionRecollapsed.collapsed || missionRecollapsed.expanded !== 'false') {
     throw new Error(`Mission did not collapse after click expansion: ${JSON.stringify(missionRecollapsed)}`);
   }
+  await page.evaluate(() => document.querySelector('#mission').blur());
 
   await page.keyboard.down('KeyW');
   await new Promise((resolve) => setTimeout(resolve, 900));
@@ -82,7 +85,7 @@ try {
     cannonballs: window.__oceanVoyager.cannonballs.filter((ball) => !ball.hostile).length,
     audio: window.__oceanVoyager.audio,
   }));
-  if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active || after.audio.context !== 'running' || after.audio.gain < 0.9) {
+  if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active || after.audio.context !== 'running' || after.audio.gain < 0.9 || after.audio.style !== 'action-game' || after.audio.tempoMs > 270 || after.audio.layers < 6 || after.audio.step < 4) {
     throw new Error(`Gameplay input failed: ${JSON.stringify({ before, after })}`);
   }
 
@@ -128,8 +131,9 @@ try {
     width: document.documentElement.scrollWidth,
     viewport: window.innerWidth,
     joystickDisplay: getComputedStyle(document.querySelector('#joystick')).display,
+    missionBox: document.querySelector('#mission').getBoundingClientRect().toJSON(),
   }));
-  if (mobile.touchDisplay === 'none' || mobile.width > mobile.viewport) {
+  if (mobile.touchDisplay === 'none' || mobile.width > mobile.viewport || mobile.missionBox.width > 200) {
     throw new Error(`Mobile layout failed: ${JSON.stringify(mobile)}`);
   }
 
