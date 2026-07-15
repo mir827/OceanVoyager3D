@@ -3,8 +3,10 @@ import './style.css';
 
 const canvas = document.querySelector('#scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
+const compactDevice = window.innerWidth <= 760 || window.matchMedia('(pointer: coarse)').matches;
+const pixelRatioCap = compactDevice ? 1 : 1.75;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
+renderer.shadowMap.enabled = !compactDevice;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -21,7 +23,7 @@ scene.add(new THREE.HemisphereLight(0xc9f3ff, 0x69583a, 2.2));
 const sun = new THREE.DirectionalLight(0xffe4aa, 3.1);
 sun.position.set(-80, 120, -60);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(compactDevice ? 1024 : 1536, compactDevice ? 1024 : 1536);
 sun.shadow.camera.left = -80;
 sun.shadow.camera.right = 80;
 sun.shadow.camera.top = 80;
@@ -69,6 +71,16 @@ const bgm = new Audio(bgmUrl);
 bgm.loop = true;
 bgm.preload = 'auto';
 bgm.volume = 0.74;
+const bgmReady = new Promise((resolve) => {
+  if (bgm.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+    resolve();
+    return;
+  }
+  const finish = () => resolve();
+  bgm.addEventListener('canplaythrough', finish, { once: true });
+  bgm.addEventListener('error', finish, { once: true });
+});
+bgm.load();
 const musicProfile = {
   style: 'commercial-high-seas',
   source: 'audio-file',
@@ -481,6 +493,7 @@ async function startAudio() {
   }
   if (audioContext.state !== 'running') await audioContext.resume();
   if (!musicMuted) {
+    await bgmReady;
     bgm.muted = false;
     await bgm.play();
   }
@@ -906,8 +919,8 @@ function animate() {
   requestAnimationFrame(animate);
 }
 
-function resetGame() {
-  Object.assign(game, { started: true, ended: false, speed: 0, heading: 0, health: 100, treasures: 0, score: 0, supplies: 0, time: 0, cannonCooldown: 0, hitCooldown: 0, ultimateCharge: 40 });
+async function resetGame() {
+  Object.assign(game, { started: false, ended: false, speed: 0, heading: 0, health: 100, treasures: 0, score: 0, supplies: 0, time: 0, cannonCooldown: 0, hitCooldown: 0, ultimateCharge: 40 });
   player.position.set(0, 0.25, 32);
   player.rotation.set(0, 0, 0);
   islands.forEach((island) => { island.collected = false; island.beacon.visible = true; });
@@ -916,11 +929,17 @@ function resetGame() {
   ui.missionTitle.textContent = '잃어버린 왕관의 보물 5개를 찾으십시오';
   ui.missionDetail.textContent = '빛나는 섬 가까이 항해하면 보물을 발견할 수 있습니다.';
   expandMission();
-  ui.startScreen.classList.add('hidden');
   ui.endScreen.classList.add('hidden');
-  showDanger('돛을 올려라 — 항해 시작!');
   bgm.currentTime = 0;
-  startAudio().catch(() => showDanger('소리 버튼을 눌러 음악을 시작하세요'));
+  showDanger('항해 준비 중 — 음악을 불러옵니다');
+  try {
+    await startAudio();
+  } catch {
+    showDanger('소리 버튼을 눌러 음악을 시작하세요');
+  }
+  game.started = true;
+  ui.startScreen.classList.add('hidden');
+  showDanger('돛을 올려라 — 항해 시작!');
 }
 
 ui.startButton.addEventListener('click', resetGame);
@@ -1015,9 +1034,12 @@ camera.lookAt(player.position);
 animate();
 
 window.__oceanVoyager = {
-  game, player, islands, enemies, items, cannonballs, joystick, resetGame, fireCannon, useUltimate, chargeUltimate,
+  game, player, islands, enemies, items, cannonballs, joystick, resetGame, fireCannon, useUltimate, chargeUltimate, collectItem,
   expandMission,
   get particleCount() { return particles.length; },
+  get performanceProfile() {
+    return { compactDevice, pixelRatio: renderer.getPixelRatio(), shadows: renderer.shadowMap.enabled, shadowMapSize: sun.shadow.mapSize.x };
+  },
   get audio() {
     return {
       context: audioContext?.state ?? 'not-started',

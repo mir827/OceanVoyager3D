@@ -45,7 +45,7 @@ async function runProbe(page, label, scenario) {
   }, { label, scenarioSource: scenario.toString() });
 
   const stats = summarize(samples);
-  if (stats.frames < 45 || stats.p95 > 52 || stats.max > 100 || stats.longFrames > 6) {
+  if (stats.frames < 45 || stats.p95 > 42 || stats.max > 75 || stats.longFrames > 3) {
     throw new Error(`${label} frame budget failed: ${JSON.stringify(stats)}`);
   }
   return stats;
@@ -53,18 +53,18 @@ async function runProbe(page, label, scenario) {
 
 try {
   const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 720, deviceScaleFactor: 1 });
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
   await page.goto('http://localhost:4173/', { waitUntil: 'networkidle0' });
   await page.waitForFunction(() => window.__oceanVoyager?.player);
   await page.click('#start-button');
-  await page.waitForFunction(() => window.__oceanVoyager.audio.context === 'running');
+  await page.waitForFunction(() => window.__oceanVoyager.game.started && window.__oceanVoyager.audio.context === 'running');
 
   const pickup = await runProbe(page, 'pickup', async (voyager) => {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     voyager.game.speed = 0;
     for (const item of voyager.items.slice(0, 8)) {
       if (item.collected) continue;
-      voyager.player.position.set(item.group.position.x, 0.25, item.group.position.z);
+      voyager.collectItem(item);
       await wait(110);
     }
     await wait(700);
@@ -88,6 +88,7 @@ try {
     particles: window.__oceanVoyager.particleCount,
     audio: window.__oceanVoyager.audio,
     cannonballs: window.__oceanVoyager.cannonballs.length,
+    performanceProfile: window.__oceanVoyager.performanceProfile,
   }));
   if (
     state.particles > 140
@@ -98,6 +99,10 @@ try {
     || state.audio.layers < 5
     || state.audio.readyState < 2
     || state.audio.duration < 30
+    || !state.performanceProfile.compactDevice
+    || state.performanceProfile.pixelRatio > 1
+    || state.performanceProfile.shadows
+    || state.performanceProfile.shadowMapSize > 1024
   ) {
     throw new Error(`Post-stress state failed: ${JSON.stringify(state)}`);
   }
