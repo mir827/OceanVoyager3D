@@ -30,6 +30,44 @@ try {
   }
 
   await page.click('#start-button');
+  const missionOpen = await page.evaluate(() => ({
+    collapsed: document.querySelector('#mission').classList.contains('collapsed'),
+    expanded: document.querySelector('#mission').getAttribute('aria-expanded'),
+    detailHeight: document.querySelector('#mission-detail').getBoundingClientRect().height,
+  }));
+  if (missionOpen.collapsed || missionOpen.expanded !== 'true' || missionOpen.detailHeight < 10) {
+    throw new Error(`Mission did not start expanded: ${JSON.stringify(missionOpen)}`);
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 5200));
+  const missionCollapsed = await page.evaluate(() => ({
+    collapsed: document.querySelector('#mission').classList.contains('collapsed'),
+    expanded: document.querySelector('#mission').getAttribute('aria-expanded'),
+    detailHeight: document.querySelector('#mission-detail').getBoundingClientRect().height,
+  }));
+  if (!missionCollapsed.collapsed || missionCollapsed.expanded !== 'false' || missionCollapsed.detailHeight > 1) {
+    throw new Error(`Mission did not collapse after 5 seconds: ${JSON.stringify(missionCollapsed)}`);
+  }
+
+  await page.click('#mission');
+  const missionClicked = await page.evaluate(() => ({
+    collapsed: document.querySelector('#mission').classList.contains('collapsed'),
+    expanded: document.querySelector('#mission').getAttribute('aria-expanded'),
+    detailHeight: document.querySelector('#mission-detail').getBoundingClientRect().height,
+  }));
+  if (missionClicked.collapsed || missionClicked.expanded !== 'true' || missionClicked.detailHeight < 10) {
+    throw new Error(`Mission click did not expand panel: ${JSON.stringify(missionClicked)}`);
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 5200));
+  const missionRecollapsed = await page.evaluate(() => ({
+    collapsed: document.querySelector('#mission').classList.contains('collapsed'),
+    expanded: document.querySelector('#mission').getAttribute('aria-expanded'),
+  }));
+  if (!missionRecollapsed.collapsed || missionRecollapsed.expanded !== 'false') {
+    throw new Error(`Mission did not collapse after click expansion: ${JSON.stringify(missionRecollapsed)}`);
+  }
+
   await page.keyboard.down('KeyW');
   await new Promise((resolve) => setTimeout(resolve, 900));
   await page.keyboard.up('KeyW');
@@ -46,6 +84,29 @@ try {
   }));
   if (!after.started || !after.startHidden || after.z >= before.z || after.health <= 0 || after.cannonballs < 1 || !after.audio.active || after.audio.context !== 'running' || after.audio.gain < 0.9) {
     throw new Error(`Gameplay input failed: ${JSON.stringify({ before, after })}`);
+  }
+
+  const cannonBefore = await page.evaluate(() => ({
+    cooldown: window.__oceanVoyager.game.cannonCooldown,
+    friendly: window.__oceanVoyager.cannonballs.filter((ball) => !ball.hostile).length,
+    particles: window.__oceanVoyager.particleCount,
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 470));
+  await page.keyboard.press('Space');
+  await new Promise((resolve) => setTimeout(resolve, 90));
+  const cannonAfter = await page.evaluate(() => {
+    const friendlyBalls = window.__oceanVoyager.cannonballs.filter((ball) => !ball.hostile);
+    const newest = friendlyBalls.at(-1);
+    return {
+      cooldown: window.__oceanVoyager.game.cannonCooldown,
+      friendly: friendlyBalls.length,
+      particles: window.__oceanVoyager.particleCount,
+      hasGlow: Boolean(newest?.object.material?.emissiveIntensity > 1),
+      hasLight: Boolean(newest?.object.children.some((child) => child.isLight)),
+    };
+  });
+  if (cannonBefore.cooldown > 0.46 || cannonAfter.friendly <= cannonBefore.friendly || cannonAfter.particles <= cannonBefore.particles || !cannonAfter.hasGlow || !cannonAfter.hasLight) {
+    throw new Error(`Fast vivid cannon failed: ${JSON.stringify({ cannonBefore, cannonAfter })}`);
   }
 
   await page.evaluate(() => window.__oceanVoyager.chargeUltimate(60));
@@ -93,7 +154,7 @@ try {
   }
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
 
-  console.log(JSON.stringify({ initial: before, gameplay: after, mobile, joystick: joystickState }, null, 2));
+  console.log(JSON.stringify({ initial: before, mission: { missionOpen, missionCollapsed, missionClicked, missionRecollapsed }, gameplay: after, cannon: { cannonBefore, cannonAfter }, mobile, joystick: joystickState }, null, 2));
 } finally {
   await browser.close();
 }

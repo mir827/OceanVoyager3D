@@ -55,6 +55,7 @@ let audioContext;
 let musicGain;
 let musicTimer;
 let musicMuted = false;
+let missionTimer;
 
 const oceanGeo = new THREE.PlaneGeometry(650, 650, 128, 128);
 oceanGeo.rotateX(-Math.PI / 2);
@@ -83,6 +84,13 @@ scene.add(seabed);
 
 function material(color, roughness = 0.75) {
   return new THREE.MeshStandardMaterial({ color, roughness });
+}
+
+function glowMaterial(color, roughness = 0.35, intensity = 1.2) {
+  const mat = material(color, roughness);
+  mat.emissive = new THREE.Color(color);
+  mat.emissiveIntensity = intensity;
+  return mat;
 }
 
 function mesh(geometry, mat, parent, position = [0, 0, 0], rotation = [0, 0, 0]) {
@@ -293,6 +301,16 @@ function spawnExplosion(position, radius = 1, count = 24) {
   particles.push({ object: light, velocity: new THREE.Vector3(), life: 0.32, maxLife: 0.32 });
 }
 
+function spawnMuzzleFlash(position, direction, hostile = false) {
+  const flashColor = hostile ? 0xe84d38 : 0xffb25a;
+  const flash = mesh(new THREE.ConeGeometry(0.34, 1.7, 8), glowMaterial(flashColor, 0.28, 2), scene, [position.x, position.y, position.z]);
+  flash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
+  flash.position.addScaledVector(direction, 1.3);
+  flash.material.transparent = true;
+  particles.push({ object: flash, velocity: direction.clone().multiplyScalar(5), life: 0.16, maxLife: 0.16 });
+  spawnSplash(position, hostile ? 0xd54e3b : 0xffb66c, hostile ? 5 : 11);
+}
+
 function playTone(frequency, duration, volume = 0.035, type = 'sine', delay = 0) {
   if (!audioContext || musicMuted) return;
   const start = audioContext.currentTime + delay;
@@ -374,13 +392,15 @@ function playCannonSound() {
 function fireCannon(owner, hostile = false) {
   if (owner === player && (!game.started || game.ended || game.cannonCooldown > 0)) return false;
   const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(owner.quaternion).normalize();
-  const ball = mesh(new THREE.SphereGeometry(0.26, 8, 8), material(hostile ? 0xd6442f : 0x292929, 0.2), scene);
+  const ball = mesh(new THREE.SphereGeometry(hostile ? 0.24 : 0.34, 10, 10), glowMaterial(hostile ? 0xd6442f : 0xff7c35, 0.18, hostile ? 0.7 : 1.8), scene);
   ball.position.copy(owner.position).addScaledVector(direction, 5).add(new THREE.Vector3(0, 2.2, 0));
-  cannonballs.push({ object: ball, velocity: direction.multiplyScalar(hostile ? 25 : 34), hostile, life: 4 });
+  const ember = new THREE.PointLight(hostile ? 0xd6442f : 0xff863d, hostile ? 8 : 20, hostile ? 7 : 12, 2);
+  ball.add(ember);
+  cannonballs.push({ object: ball, velocity: direction.multiplyScalar(hostile ? 25 : 39), hostile, life: 4, trailTimer: 0 });
+  spawnMuzzleFlash(ball.position, direction, hostile);
   if (owner === player) {
-    game.cannonCooldown = game.supplies > 0 ? 0.42 : 0.65;
+    game.cannonCooldown = game.supplies > 0 ? 0.28 : 0.45;
     playCannonSound();
-    spawnSplash(ball.position, 0xffa34e, 8);
   }
   return true;
 }
@@ -459,6 +479,17 @@ function showDanger(text) {
   dangerTimer = setTimeout(() => element.classList.remove('show'), 1600);
 }
 
+function expandMission(duration = 5000) {
+  const element = document.querySelector('#mission');
+  element.classList.remove('collapsed');
+  element.setAttribute('aria-expanded', 'true');
+  clearTimeout(missionTimer);
+  missionTimer = window.setTimeout(() => {
+    element.classList.add('collapsed');
+    element.setAttribute('aria-expanded', 'false');
+  }, duration);
+}
+
 function collectTreasure(island) {
   island.collected = true;
   island.beacon.visible = false;
@@ -470,6 +501,7 @@ function collectTreasure(island) {
   if (game.treasures === islands.length) {
     document.querySelector('#mission-title').textContent = '왕실 항구로 귀환하십시오';
     document.querySelector('#mission-detail').textContent = '남쪽의 황금 부두가 당신의 귀환을 기다립니다.';
+    expandMission();
   }
 }
 
@@ -562,8 +594,16 @@ function updateCannonballs(dt) {
   for (let i = cannonballs.length - 1; i >= 0; i -= 1) {
     const ball = cannonballs[i];
     ball.life -= dt;
+    ball.trailTimer -= dt;
     ball.velocity.y -= 2.5 * dt;
     ball.object.position.addScaledVector(ball.velocity, dt);
+    if (ball.trailTimer <= 0) {
+      ball.trailTimer = ball.hostile ? 0.09 : 0.045;
+      const trailColor = ball.hostile ? 0xbf3b32 : 0xffa45a;
+      const trail = mesh(new THREE.SphereGeometry(ball.hostile ? 0.11 : 0.16, 6, 6), glowMaterial(trailColor, 0.55, ball.hostile ? 0.5 : 1.1), scene, [ball.object.position.x, ball.object.position.y, ball.object.position.z]);
+      trail.material.transparent = true;
+      particles.push({ object: trail, velocity: new THREE.Vector3((Math.random() - 0.5) * 1.8, 0.6 + Math.random() * 1.4, (Math.random() - 0.5) * 1.8), life: ball.hostile ? 0.4 : 0.62, maxLife: ball.hostile ? 0.4 : 0.62 });
+    }
     if (ball.hostile && ball.object.position.distanceTo(player.position) < 3.8) {
       damage(14, '해적의 포격!');
       ball.life = 0;
@@ -573,14 +613,15 @@ function updateCannonballs(dt) {
           enemy.health -= 1;
           chargeUltimate(7);
           ball.life = 0;
-          spawnExplosion(enemy.ship.position, enemy.health <= 0 ? 1.2 : 0.7, enemy.health <= 0 ? 26 : 16);
+          spawnExplosion(enemy.ship.position, enemy.health <= 0 ? 1.55 : 1.05, enemy.health <= 0 ? 44 : 30);
           if (enemy.health <= 0) sinkEnemy(enemy);
           break;
         }
       }
     }
     if (ball.object.position.y < 0 || ball.life <= 0) {
-      spawnSplash(ball.object.position, 0xc7f3ff, 6);
+      spawnSplash(ball.object.position, ball.hostile ? 0xff7b64 : 0xffcf8a, ball.hostile ? 8 : 12);
+      if (!ball.hostile) spawnExplosion(ball.object.position, 0.52, 14);
       scene.remove(ball.object);
       cannonballs.splice(i, 1);
     }
@@ -685,6 +726,7 @@ function resetGame() {
   items.forEach((item) => { item.collected = false; item.group.visible = true; item.group.position.copy(item.spawn); });
   document.querySelector('#mission-title').textContent = '잃어버린 왕관의 보물 5개를 찾으십시오';
   document.querySelector('#mission-detail').textContent = '빛나는 섬 가까이 항해하면 보물을 발견할 수 있습니다.';
+  expandMission();
   document.querySelector('#start-screen').classList.add('hidden');
   document.querySelector('#end-screen').classList.add('hidden');
   showDanger('돛을 올려라 — 항해 시작!');
@@ -693,6 +735,14 @@ function resetGame() {
 
 document.querySelector('#start-button').addEventListener('click', resetGame);
 document.querySelector('#restart-button').addEventListener('click', resetGame);
+document.querySelector('#mission').addEventListener('click', () => {
+  if (game.started && document.querySelector('#mission').classList.contains('collapsed')) expandMission();
+});
+document.querySelector('#mission').addEventListener('keydown', (event) => {
+  if (!['Enter', 'Space'].includes(event.code)) return;
+  event.preventDefault();
+  if (game.started) expandMission();
+});
 window.addEventListener('keydown', (event) => {
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
@@ -776,5 +826,7 @@ animate();
 
 window.__oceanVoyager = {
   game, player, islands, enemies, items, cannonballs, joystick, resetGame, fireCannon, useUltimate, chargeUltimate,
+  expandMission,
+  get particleCount() { return particles.length; },
   get audio() { return { context: audioContext?.state ?? 'not-started', muted: musicMuted, active: Boolean(musicTimer), gain: musicGain?.gain.value ?? 0 }; },
 };

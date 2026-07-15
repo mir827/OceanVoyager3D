@@ -23,9 +23,13 @@ button { font: inherit; }
 .compass span { position: absolute; top: 5px; color: #deab56; font: 700 12px 'Cormorant Garamond'; }
 .compass div { width: 2px; height: 46px; background: linear-gradient(#e4a750 50%, #e9e0c4 50%); clip-path: polygon(50% 0, 100% 48%, 65% 50%, 65% 100%, 35% 100%, 35% 50%, 0 48%); transition: transform .12s linear; }
 .compass small { position: absolute; bottom: -22px; color: #9dc7c9; }
-.mission { position: fixed; z-index: 4; left: 22px; top: 72px; max-width: min(360px, 46vw); padding: 8px 12px; border-left: 2px solid #d49a43; background: linear-gradient(90deg, #051c27d9, #051c2700); pointer-events: none; text-shadow: 0 2px 4px #000; }
+.mission { position: fixed; z-index: 4; left: 22px; top: 72px; max-width: min(360px, 46vw); padding: 8px 12px; border-left: 2px solid #d49a43; background: linear-gradient(90deg, #051c27d9, #051c2700); pointer-events: auto; text-shadow: 0 2px 4px #000; cursor: pointer; transition: max-width .28s ease, padding .28s ease, background .28s ease; }
 .mission strong { display: block; margin: 2px 0; color: #fff2ce; font-family: 'Cormorant Garamond', 'Noto Sans KR'; font-size: 16px; line-height: 1.2; }
-.mission p { margin: 0; color: #b6c8c8; font-size: 11px; line-height: 1.35; }
+.mission p { margin: 0; color: #b6c8c8; font-size: 11px; line-height: 1.35; transition: opacity .2s ease, max-height .24s ease; }
+.mission.collapsed { max-width: min(265px, 38vw); padding: 6px 11px; background: linear-gradient(90deg, #051c27c9, #051c2733); }
+.mission.collapsed strong { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mission.collapsed p { max-height: 0; opacity: 0; overflow: hidden; }
+.mission:focus-visible { outline: 2px solid #f0cf89; outline-offset: 4px; }
 .danger { position: fixed; z-index: 5; top: 26%; left: 50%; translate: -50% -50%; color: #ffc876; font: 700 clamp(17px, 3vw, 29px) 'Cormorant Garamond', serif; letter-spacing: .12em; text-shadow: 0 0 13px #d82820; opacity: 0; transition: opacity .25s; pointer-events: none; text-align: center; }
 .danger.show { opacity: 1; }
 .audio-toggle { position: fixed; z-index: 7; right: 25px; top: 190px; width: 38px; height: 38px; border: 1px solid #d6a75b66; border-radius: 50%; color: #f6d595; background: #061b25c9; cursor: pointer; }
@@ -59,6 +63,7 @@ kbd { min-width: 28px; padding: 6px 8px; text-align: center; color: #f3d18a; bor
 @media (pointer: coarse), (max-width: 760px) {
   .touch-controls { display: flex; }
   .mission { left: 12px; right: 12px; top: 112px; max-width: none; padding: 7px 10px; }
+  .mission.collapsed { max-width: none; right: auto; width: min(260px, calc(100vw - 24px)); }
   .hud { padding: 12px; }
   .brand .eyebrow { display: none; }
   .brand strong { font-size: 20px; }
