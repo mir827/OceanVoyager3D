@@ -89,7 +89,16 @@ try {
     audio: window.__oceanVoyager.audio,
     cannonballs: window.__oceanVoyager.cannonballs.length,
   }));
-  if (state.particles > 140 || state.audio.style !== 'arcade-high-seas' || state.audio.tempoMs !== 190 || state.audio.layers < 8) {
+  if (
+    state.particles > 140
+    || state.audio.source !== 'audio-file'
+    || state.audio.style !== 'commercial-high-seas'
+    || !state.audio.asset.endsWith('/audio/ocean-voyager-commercial-bgm.mp3')
+    || state.audio.tempoBpm !== 126
+    || state.audio.layers < 5
+    || state.audio.readyState < 2
+    || state.audio.duration < 30
+  ) {
     throw new Error(`Post-stress state failed: ${JSON.stringify(state)}`);
   }
 

@@ -62,15 +62,19 @@ const tempCameraTarget = new THREE.Vector3();
 const tempCameraLook = new THREE.Vector3();
 let audioContext;
 let musicGain;
-let musicTimer;
 let musicMuted = false;
-let musicStep = 0;
-let hatNoiseBuffer;
 let lastCannonSoundAt = -1;
+const bgmUrl = `${import.meta.env.BASE_URL}audio/ocean-voyager-commercial-bgm.mp3`;
+const bgm = new Audio(bgmUrl);
+bgm.loop = true;
+bgm.preload = 'auto';
+bgm.volume = 0.74;
 const musicProfile = {
-  style: 'arcade-high-seas',
-  tempoMs: 190,
-  layers: ['power-kick', 'racing-snare', 'bright-hat', 'pulse-bass', 'hero-arp', 'brass-hit', 'adventure-lead', 'victory-countermelody'],
+  style: 'commercial-high-seas',
+  source: 'audio-file',
+  asset: bgmUrl,
+  tempoBpm: 126,
+  layers: ['orchestral-brass', 'cinematic-strings', 'driving-percussion', 'synth-bass', 'tropical-accents'],
 };
 let missionTimer;
 const ui = {
@@ -467,59 +471,6 @@ function playDrum(frequency, duration, volume = 0.08, delay = 0) {
   oscillator.stop(start + duration + 0.03);
 }
 
-function playHat(delay = 0) {
-  if (!audioContext || musicMuted) return;
-  const start = audioContext.currentTime + delay;
-  if (!hatNoiseBuffer) {
-    hatNoiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.08, audioContext.sampleRate);
-    const data = hatNoiseBuffer.getChannelData(0);
-    for (let i = 0; i < data.length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
-  }
-  const noise = audioContext.createBufferSource();
-  const filter = audioContext.createBiquadFilter();
-  const gain = audioContext.createGain();
-  noise.buffer = hatNoiseBuffer;
-  noise.playbackRate.setValueAtTime(0.9 + Math.random() * 0.2, start);
-  filter.type = 'highpass';
-  filter.frequency.setValueAtTime(6200, start);
-  gain.gain.setValueAtTime(0.028, start);
-  gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.08);
-  noise.connect(filter).connect(gain).connect(musicGain);
-  noise.start(start);
-}
-
-function scheduleMusic() {
-  if (!audioContext || musicTimer) return;
-  const bassBars = [
-    [55, 55, 82.41, 55, 65.41, 65.41, 98, 65.41, 73.42, 73.42, 110, 73.42, 82.41, 98, 110, 123.47],
-    [55, 82.41, 110, 82.41, 49, 73.42, 98, 73.42, 65.41, 98, 130.81, 98, 73.42, 110, 146.83, 164.81],
-  ];
-  const arpBars = [
-    [220, 329.63, 440, 523.25, 261.63, 392, 523.25, 659.25, 293.66, 440, 587.33, 698.46, 329.63, 493.88, 659.25, 783.99],
-    [329.63, 493.88, 659.25, 783.99, 293.66, 440, 587.33, 698.46, 261.63, 392, 523.25, 659.25, 293.66, 440, 587.33, 880],
-  ];
-  const heroLead = [659.25, 783.99, 880, 783.99, 698.46, 659.25, 587.33, 659.25, 783.99, 880, 987.77, 880, 783.99, 698.46, 659.25, 783.99];
-  const brass = [110, 130.81, 146.83, 164.81];
-  const playPhrase = () => {
-    if (!game.started || game.ended) return;
-    const step = musicStep % 16;
-    const bar = Math.floor(musicStep / 16);
-    const swell = 1 + Math.min(0.35, game.speed / 40) + (game.ultimateCharge >= 100 ? 0.12 : 0);
-    playHat(0);
-    if (step % 4 === 0 || step === 10) playDrum(118 + (bar % 2) * 10, 0.14, 0.13 * swell);
-    if (step === 4 || step === 12) playDrum(205, 0.09, 0.082 * swell, 0.015);
-    if (step === 7 || step === 15) playDrum(92, 0.08, 0.06 * swell, 0.045);
-    playTone(bassBars[bar % bassBars.length][step], 0.17, (step % 4 === 0 ? 0.09 : 0.055) * swell, 'sawtooth');
-    playTone(arpBars[Math.floor(bar / 2) % arpBars.length][step], 0.085, 0.025 * swell, step % 2 ? 'triangle' : 'square', 0.04);
-    if (step % 4 === 0 || (bar % 4 === 3 && step % 2 === 0)) playTone(heroLead[(step + bar * 4) % heroLead.length], 0.16, 0.047 * swell, 'triangle', 0.07);
-    if (step === 0 || (step === 8 && bar % 2 === 0)) playTone(brass[bar % brass.length], 0.28, 0.052 * swell, 'sawtooth', 0.015);
-    musicStep += 1;
-  };
-  musicStep = 0;
-  playPhrase();
-  musicTimer = window.setInterval(playPhrase, musicProfile.tempoMs);
-}
-
 async function startAudio() {
   audioContext ??= new AudioContext();
   musicGain ??= audioContext.createGain();
@@ -529,7 +480,10 @@ async function startAudio() {
     musicGain.__connected = true;
   }
   if (audioContext.state !== 'running') await audioContext.resume();
-  scheduleMusic();
+  if (!musicMuted) {
+    bgm.muted = false;
+    await bgm.play();
+  }
   ui.audioToggle.textContent = '♫';
   ui.audioToggle.classList.remove('muted');
   ui.audioToggle.setAttribute('aria-label', '배경 음악 끄기');
@@ -965,6 +919,7 @@ function resetGame() {
   ui.startScreen.classList.add('hidden');
   ui.endScreen.classList.add('hidden');
   showDanger('돛을 올려라 — 항해 시작!');
+  bgm.currentTime = 0;
   startAudio().catch(() => showDanger('소리 버튼을 눌러 음악을 시작하세요'));
 }
 
@@ -1042,6 +997,7 @@ ui.audioToggle.addEventListener('click', () => {
   ui.audioToggle.textContent = musicMuted ? '♩' : '♫';
   ui.audioToggle.setAttribute('aria-pressed', String(musicMuted));
   ui.audioToggle.setAttribute('aria-label', musicMuted ? '배경 음악 켜기' : '배경 음악 끄기');
+  if (musicMuted) bgm.pause();
   if (!musicMuted) startAudio().catch(() => {});
 });
 
@@ -1066,12 +1022,16 @@ window.__oceanVoyager = {
     return {
       context: audioContext?.state ?? 'not-started',
       muted: musicMuted,
-      active: Boolean(musicTimer),
+      active: !bgm.paused,
       gain: musicGain?.gain.value ?? 0,
+      source: musicProfile.source,
+      asset: musicProfile.asset,
       style: musicProfile.style,
-      tempoMs: musicProfile.tempoMs,
+      tempoBpm: musicProfile.tempoBpm,
       layers: musicProfile.layers.length,
-      step: musicStep,
+      currentTime: bgm.currentTime,
+      duration: Number.isFinite(bgm.duration) ? bgm.duration : 0,
+      readyState: bgm.readyState,
     };
   },
 };
