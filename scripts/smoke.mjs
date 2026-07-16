@@ -150,16 +150,33 @@ try {
     throw new Error(`Fast vivid cannon failed: ${JSON.stringify({ cannonBefore, cannonAfter })}`);
   }
 
+  const chargeProbe = await page.evaluate(() => {
+    window.__oceanVoyager.game.ultimateCharge = 40;
+    window.__oceanVoyager.chargeUltimate(20);
+    return {
+      charge: window.__oceanVoyager.game.ultimateCharge,
+      profile: window.__oceanVoyager.performanceProfile,
+    };
+  });
+  if (chargeProbe.charge < 68 || chargeProbe.profile.ultimateChargeMultiplier < 1.4 || chargeProbe.profile.ultimateTargetRange < 94) {
+    throw new Error(`Faster ultimate charge failed: ${JSON.stringify(chargeProbe)}`);
+  }
+
   await page.evaluate(() => window.__oceanVoyager.chargeUltimate(60));
+  const ultimateBefore = await page.evaluate(() => ({
+    activeEnemies: window.__oceanVoyager.enemies.filter((enemy) => enemy.active).length,
+    particles: window.__oceanVoyager.particleCount,
+  }));
   await page.keyboard.press('KeyE');
-  await new Promise((resolve) => setTimeout(resolve, 120));
+  await new Promise((resolve) => setTimeout(resolve, 260));
   const ultimate = await page.evaluate(() => ({
     charge: window.__oceanVoyager.game.ultimateCharge,
     activeEnemies: window.__oceanVoyager.enemies.filter((enemy) => enemy.active).length,
-    particles: document.querySelector('#ultimate-button').classList.contains('ready'),
+    particles: window.__oceanVoyager.particleCount,
+    ready: document.querySelector('#ultimate-button').classList.contains('ready'),
   }));
-  if (ultimate.charge !== 0 || ultimate.activeEnemies >= before.enemies || ultimate.particles) {
-    throw new Error(`Ultimate failed: ${JSON.stringify(ultimate)}`);
+  if (ultimate.charge !== 0 || ultimate.activeEnemies >= ultimateBefore.activeEnemies || ultimate.particles < 30 || ultimate.ready) {
+    throw new Error(`Ultimate failed: ${JSON.stringify({ chargeProbe, ultimateBefore, ultimate })}`);
   }
 
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });

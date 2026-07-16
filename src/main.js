@@ -60,6 +60,8 @@ const MAX_FRIENDLY_CANNONBALLS = 16;
 const PROJECTILE_LIGHT_BATCH_SIZE = MAX_CANNONBALLS;
 const PROJECTILE_LIGHT_LOCKED_SLOTS = 8;
 const EFFECT_LIGHT_BATCH_SIZE = 14;
+const ULTIMATE_CHARGE_MULTIPLIER = 1.45;
+const ULTIMATE_TARGET_RANGE = 94;
 const ENEMY_CHASE_RANGE_SQ = 55 * 55;
 const ENEMY_FIRE_RANGE_SQ = 34 * 34;
 const ENEMY_STANDOFF_RANGE_SQ = 18 * 18;
@@ -92,7 +94,8 @@ let renderFrame = 0;
 let previousFrameCost = 0;
 let combatRenderWarmed = false;
 let shadowCooldownUntil = 0;
-const SHADOW_UPDATE_INTERVAL = 4;
+const SHADOW_UPDATE_INTERVAL = compactDevice ? 10 : 4;
+const STARTUP_SHADOW_COOLDOWN = compactDevice ? 4.5 : 1.6;
 const bgmUrl = `${import.meta.env.BASE_URL}audio/ocean-voyager-commercial-bgm.mp3`;
 const bgm = new Audio(bgmUrl);
 bgm.loop = true;
@@ -630,6 +633,23 @@ function spawnExplosion(position, radius = 1, count = 24) {
   if (light) addParticle(light, 0, 0, 0, 0.32, 1);
 }
 
+function spawnShockwave(position, radius = 1, rings = 2) {
+  const base = tempParticlePosition.set(position.x, Math.max(0.45, position.y), position.z);
+  const colors = [0x94f4ff, 0xffe4a2, 0xff673d];
+  for (let i = 0; i < rings; i += 1) {
+    const ring = particleMesh(
+      particleGeometry.ring,
+      cachedParticleMaterial(colors[i % colors.length], 0.28, 1.8, true),
+      base,
+      radius * (2.25 + i * 0.85),
+      [Math.PI / 2, 0, 0],
+    );
+    addParticle(ring, 0, 0.18, 0, 0.85 + i * 0.12, ring.scale.x, 0.95 + i * 0.12, 2.5 + i * 0.55);
+  }
+  const light = effectLight(0x64e6ff, 38 * radius, 34 * radius, 2, base);
+  if (light) addParticle(light, 0, 0, 0, 0.42, 1);
+}
+
 function spawnMuzzleFlash(position, direction, hostile = false) {
   const flashColor = hostile ? 0xe84d38 : 0xffb25a;
   const flash = particleMesh(
@@ -831,7 +851,7 @@ function collectItem(item) {
 }
 
 function chargeUltimate(amount) {
-  game.ultimateCharge = Math.min(100, game.ultimateCharge + amount);
+  game.ultimateCharge = Math.min(100, game.ultimateCharge + amount * ULTIMATE_CHARGE_MULTIPLIER);
 }
 
 function sinkEnemy(enemy, reward = true) {
@@ -847,22 +867,42 @@ function sinkEnemy(enemy, reward = true) {
 function useUltimate() {
   if (!game.started || game.ended || game.ultimateCharge < 100) return false;
   game.ultimateCharge = 0;
-  showDanger('폭풍 포격 — 전방위 일제사격!');
-  spawnExplosion(player.position, 2.2, 26);
+  showDanger('왕실 폭풍 포격 — 전 해역 초토화!');
+  spawnShockwave(player.position, 2.1, compactDevice ? 2 : 3);
+  spawnExplosion(player.position, 2.45, compactDevice ? 24 : 34);
   if (audioContext && !musicMuted) {
     playDrum(132, 0.32, 0.16);
     playTone(392, 0.24, 0.09, 'square', 0.02);
     playTone(523.25, 0.28, 0.08, 'triangle', 0.14);
+    playDrum(86, 0.42, 0.13, 0.18);
+    playTone(659.25, 0.32, 0.07, 'sawtooth', 0.24);
   }
 
+  const delayedStrikes = [];
   for (const enemy of enemies) {
     if (!enemy.active) continue;
     const distance = enemy.ship.position.distanceTo(player.position);
-    if (distance > 82) continue;
-    enemy.health -= distance < 82 ? 3 : 2;
-    spawnExplosion(enemy.ship.position, 1.05, 12);
+    if (distance > ULTIMATE_TARGET_RANGE) continue;
+    enemy.health -= distance < ULTIMATE_TARGET_RANGE ? 3 : 2;
+    const strikePosition = enemy.ship.position.clone();
+    delayedStrikes.push({ position: strikePosition, distance });
+    spawnExplosion(strikePosition, 1.15, compactDevice ? 10 : 16);
+    if (distance < 70 || delayedStrikes.length % 2 === 0) {
+      spawnShockwave(strikePosition, 1.05, compactDevice ? 1 : 2);
+    }
     if (enemy.health <= 0) sinkEnemy(enemy, false);
   }
+
+  delayedStrikes
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, compactDevice ? 4 : 7)
+    .forEach(({ position }, index) => {
+      window.setTimeout(() => {
+        if (!game.started || game.ended) return;
+        spawnExplosion(position, 0.9 + index * 0.04, compactDevice ? 5 : 8);
+        if (index % 2 === 0) spawnShockwave(position, 0.8, 1);
+      }, 80 + index * 70);
+    });
 
   for (let i = cannonballs.length - 1; i >= 0; i -= 1) {
     const ball = cannonballs[i];
@@ -1212,6 +1252,7 @@ async function warmCombatRenderVariants() {
     [particleGeometry.trail, cachedParticleMaterial(0xffa45a, 0.55, 1.1, true), 12, 0.16],
     [particleGeometry.spark, cachedParticleMaterial(0xff9b43, 0.45, 1.2, true), 12, 0.16],
     [particleGeometry.ring, cachedParticleMaterial(0xff673d, 0.3, 1.5, true), 4, 0.8],
+    [particleGeometry.ring, cachedParticleMaterial(0x94f4ff, 0.28, 1.8, true), 4, 0.9],
     [particleGeometry.muzzle, cachedParticleMaterial(0xffb25a, 0.28, 2, true), 4, 1],
   ];
 
@@ -1330,7 +1371,7 @@ function animate() {
   profiledStep('sky', () => updateSky(game.time));
   profiledStep('hud', updateHUD);
   const transientEffectsActive = cannonballs.length > 0 || particles.length > 0;
-  const shadowFrame = renderFrame % SHADOW_UPDATE_INTERVAL === 0;
+  const shadowFrame = !compactDevice && renderFrame % SHADOW_UPDATE_INTERVAL === 0;
   renderer.shadowMap.needsUpdate = !transientEffectsActive && shadowFrame && previousFrameCost < 45 && game.time >= shadowCooldownUntil;
   profiledStep('render', () => renderer.render(scene, camera));
   previousFrameCost = performance.now() - frameStartedAt;
@@ -1366,6 +1407,7 @@ async function resetGame() {
     showDanger('소리 버튼을 눌러 음악을 시작하세요');
   }
   await warmCombatRenderVariants();
+  shadowCooldownUntil = Math.max(shadowCooldownUntil, game.time + STARTUP_SHADOW_COOLDOWN);
   expandMission();
   game.started = true;
   ui.startScreen.classList.add('hidden');
@@ -1487,6 +1529,7 @@ function prewarmRuntimeObjects() {
     [particleGeometry.trail, cachedParticleMaterial(0xbf3b32, 0.55, 0.5, true), 24],
     [particleGeometry.ring, cachedParticleMaterial(0xff673d, 0.3, 1.5, true), 8],
     [particleGeometry.ring, cachedParticleMaterial(0xffe4a2, 0.3, 1.5, true), 8],
+    [particleGeometry.ring, cachedParticleMaterial(0x94f4ff, 0.28, 1.8, true), 8],
     [particleGeometry.muzzle, cachedParticleMaterial(0xffb25a, 0.28, 2, true), 10],
     [particleGeometry.muzzle, cachedParticleMaterial(0xe84d38, 0.28, 2, true), 10],
   ];
@@ -1608,6 +1651,8 @@ window.__oceanVoyager = {
       antialias: renderer.getContext().getContextAttributes().antialias,
       maxParticles: MAX_PARTICLES,
       maxCannonballs: MAX_CANNONBALLS,
+      ultimateChargeMultiplier: ULTIMATE_CHARGE_MULTIPLIER,
+      ultimateTargetRange: ULTIMATE_TARGET_RANGE,
       projectileLightBatchSize: PROJECTILE_LIGHT_BATCH_SIZE,
       projectileLightLockedSlots: PROJECTILE_LIGHT_LOCKED_SLOTS,
       effectLightBatchSize: EFFECT_LIGHT_BATCH_SIZE,
