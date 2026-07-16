@@ -105,6 +105,12 @@ try {
       await wait(110);
     }
     await wait(700);
+  }, {
+    budget: {
+      maxP95: 52,
+      maxFrame: 75,
+      maxLongFrames: 6,
+    },
   });
 
   const rapidFire = await runProbe(page, 'rapid-fire', async (voyager) => {
@@ -196,9 +202,16 @@ try {
     || state.audio.readyState < 2
     || state.audio.duration < 30
     || !state.performanceProfile.compactDevice
-    || state.performanceProfile.pixelRatio > 1
-    || state.performanceProfile.shadows
-    || state.performanceProfile.shadowMapSize > 1024
+    || state.performanceProfile.pixelRatio < 1.5
+    || state.performanceProfile.pixelRatioCap < 1.75
+    || !state.performanceProfile.shadows
+    || state.performanceProfile.shadowMapSize < 1536
+    || !state.performanceProfile.antialias
+    || state.performanceProfile.maxParticles < 140
+    || state.performanceProfile.maxCannonballs < 44
+    || state.performanceProfile.pools.stats.particlesReused < 20
+    || state.performanceProfile.pools.stats.cannonballsReused < 2
+    || state.performanceProfile.pools.stats.lightsReused < 1
   ) {
     throw new Error(`Post-stress state failed: ${JSON.stringify(state)}`);
   }

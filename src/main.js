@@ -3,11 +3,12 @@ import './style.css';
 
 const canvas = document.querySelector('#scene');
 const compactDevice = window.innerWidth <= 760 || window.matchMedia('(pointer: coarse)').matches;
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: !compactDevice, alpha: false, powerPreference: 'high-performance' });
-const pixelRatioCap = compactDevice ? 1 : 1.75;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
+const pixelRatioCap = 1.75;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
-renderer.shadowMap.enabled = !compactDevice;
+renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
@@ -23,7 +24,7 @@ scene.add(new THREE.HemisphereLight(0xc9f3ff, 0x69583a, 2.2));
 const sun = new THREE.DirectionalLight(0xffe4aa, 3.1);
 sun.position.set(-80, 120, -60);
 sun.castShadow = true;
-sun.shadow.mapSize.set(compactDevice ? 1024 : 1536, compactDevice ? 1024 : 1536);
+sun.shadow.mapSize.set(1536, 1536);
 sun.shadow.camera.left = -80;
 sun.shadow.camera.right = 80;
 sun.shadow.camera.top = 80;
@@ -53,9 +54,9 @@ const particles = [];
 const storms = [];
 const items = [];
 const joystick = { x: 0, y: 0, active: false, pointerId: null };
-const MAX_CANNONBALLS = compactDevice ? 28 : 44;
-const MAX_HOSTILE_CANNONBALLS = compactDevice ? 16 : 26;
-const MAX_FRIENDLY_CANNONBALLS = compactDevice ? 10 : 16;
+const MAX_CANNONBALLS = 44;
+const MAX_HOSTILE_CANNONBALLS = 26;
+const MAX_FRIENDLY_CANNONBALLS = 16;
 const ENEMY_CHASE_RANGE_SQ = 55 * 55;
 const ENEMY_FIRE_RANGE_SQ = 34 * 34;
 const ENEMY_STANDOFF_RANGE_SQ = 18 * 18;
@@ -76,10 +77,12 @@ let audioContext;
 let musicGain;
 let musicMuted = false;
 let lastCannonSoundAt = -1;
+let renderFrame = 0;
+const SHADOW_UPDATE_INTERVAL = 4;
 const bgmUrl = `${import.meta.env.BASE_URL}audio/ocean-voyager-commercial-bgm.mp3`;
 const bgm = new Audio(bgmUrl);
 bgm.loop = true;
-bgm.preload = compactDevice ? 'metadata' : 'auto';
+bgm.preload = 'auto';
 bgm.volume = 0.74;
 const bgmReady = new Promise((resolve) => {
   if (bgm.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
@@ -150,7 +153,21 @@ const particleGeometry = {
   cannonHostile: new THREE.SphereGeometry(0.24, 10, 10),
 };
 const particleMaterialCache = new Map();
-const MAX_PARTICLES = compactDevice ? 76 : 140;
+const particlePools = new Map();
+const cannonballPools = { friendly: [], hostile: [] };
+const effectLightPool = [];
+const poolStats = {
+  particlesCreated: 0,
+  particlesReused: 0,
+  particlesReleased: 0,
+  cannonballsCreated: 0,
+  cannonballsReused: 0,
+  cannonballsReleased: 0,
+  lightsCreated: 0,
+  lightsReused: 0,
+  lightsReleased: 0,
+};
+const MAX_PARTICLES = 140;
 
 function cachedParticleMaterial(color, roughness = 0.55, emissiveIntensity = 0, transparent = false) {
   const key = `${color}:${roughness}:${emissiveIntensity}:${transparent}`;
@@ -163,12 +180,7 @@ function cachedParticleMaterial(color, roughness = 0.55, emissiveIntensity = 0, 
     mat.transparent = transparent;
     particleMaterialCache.set(key, mat);
   }
-  const cached = particleMaterialCache.get(key);
-  if (!transparent) return cached;
-  if (compactDevice) return cached;
-  const clone = cached.clone();
-  clone.userData.disposableParticleMaterial = true;
-  return clone;
+  return particleMaterialCache.get(key);
 }
 
 function addParticle(particle) {
@@ -176,28 +188,68 @@ function addParticle(particle) {
   particles.push(particle);
   while (particles.length > MAX_PARTICLES) {
     const expired = particles.shift();
-    if (expired?.object) scene.remove(expired.object);
+    if (expired?.object) releaseEffectObject(expired.object);
   }
 }
 
-function scaledEffectCount(count, minimum = 2) {
-  const compactCount = compactDevice ? Math.max(1, Math.ceil(count * 0.42)) : count;
-  const compactMinimum = compactDevice ? Math.min(minimum, 2) : minimum;
-  const pressure = particles.length / MAX_PARTICLES;
-  if (pressure > 0.82) return Math.max(compactMinimum, Math.ceil(compactCount * 0.22));
-  if (pressure > 0.62) return Math.max(compactMinimum, Math.ceil(compactCount * 0.45));
-  return compactCount;
+function scaledEffectCount(count) {
+  return count;
 }
 
 function particleMesh(geometry, mat, position, scale = 1, rotation = [0, 0, 0]) {
-  const object = new THREE.Mesh(geometry, mat);
+  const key = geometry.uuid;
+  const pool = particlePools.get(key);
+  const object = pool?.pop() ?? new THREE.Mesh(geometry, mat);
+  if (!object.userData.particlePoolKey) {
+    object.castShadow = false;
+    object.receiveShadow = false;
+    object.userData.particlePoolKey = key;
+    scene.add(object);
+    poolStats.particlesCreated += 1;
+  } else {
+    poolStats.particlesReused += 1;
+  }
+  object.material = mat;
+  object.visible = true;
   object.position.copy(position);
   object.rotation.set(...rotation);
+  object.quaternion.setFromEuler(object.rotation);
   object.scale.setScalar(scale);
-  object.castShadow = false;
-  object.receiveShadow = false;
-  scene.add(object);
   return object;
+}
+
+function effectLight(color, intensity, distance, decay, position) {
+  const light = effectLightPool.pop() ?? new THREE.PointLight(color, intensity, distance, decay);
+  if (!light.userData.pooledEffectLight) {
+    light.userData.pooledEffectLight = true;
+    scene.add(light);
+    poolStats.lightsCreated += 1;
+  } else {
+    poolStats.lightsReused += 1;
+  }
+  light.color.setHex(color);
+  light.intensity = intensity;
+  light.distance = distance;
+  light.decay = decay;
+  light.position.copy(position);
+  light.visible = true;
+  return light;
+}
+
+function releaseEffectObject(object) {
+  object.visible = false;
+  object.position.set(0, -9999, 0);
+  if (object.userData?.pooledEffectLight) {
+    object.intensity = 0;
+    effectLightPool.push(object);
+    poolStats.lightsReleased += 1;
+    return;
+  }
+  const key = object.userData?.particlePoolKey;
+  if (!key) return;
+  if (!particlePools.has(key)) particlePools.set(key, []);
+  particlePools.get(key).push(object);
+  poolStats.particlesReleased += 1;
 }
 
 const oceanGeo = new THREE.PlaneGeometry(650, 650, 40, 40);
@@ -462,8 +514,7 @@ function spawnExplosion(position, radius = 1, count = 24) {
       baseScale,
     });
   }
-  const ringCount = compactDevice ? 1 : 2;
-  for (let i = 0; i < ringCount; i += 1) {
+  for (let i = 0; i < 2; i += 1) {
     const ring = particleMesh(
       particleGeometry.ring,
       cachedParticleMaterial(i ? 0xffe4a2 : 0xff673d, 0.3, 1.5, true),
@@ -473,12 +524,8 @@ function spawnExplosion(position, radius = 1, count = 24) {
     );
     addParticle({ object: ring, velocity: new THREE.Vector3(0, 0.25, 0), life: 0.7, maxLife: 0.7, expand: 1.9 + i * 0.7 });
   }
-  if (!compactDevice) {
-    const light = new THREE.PointLight(0xff9b45, 45 * radius, 28 * radius, 2);
-    light.position.copy(burst);
-    scene.add(light);
-    addParticle({ object: light, velocity: new THREE.Vector3(), life: 0.32, maxLife: 0.32 });
-  }
+  const light = effectLight(0xff9b45, 45 * radius, 28 * radius, 2, burst);
+  addParticle({ object: light, velocity: new THREE.Vector3(), life: 0.32, maxLife: 0.32 });
 }
 
 function spawnMuzzleFlash(position, direction, hostile = false) {
@@ -559,6 +606,49 @@ function playCannonSound() {
   oscillator.stop(audioContext.currentTime + 0.25);
 }
 
+function acquireCannonballMesh(hostile) {
+  const type = hostile ? 'hostile' : 'friendly';
+  const pool = cannonballPools[type];
+  const ball = pool.pop() ?? new THREE.Mesh(
+    hostile ? particleGeometry.cannonHostile : particleGeometry.cannonFriendly,
+    cachedParticleMaterial(hostile ? 0xd6442f : 0xff7c35, 0.18, hostile ? 0.7 : 1.8),
+  );
+  if (!ball.userData.cannonballType) {
+    ball.userData.cannonballType = type;
+    ball.castShadow = true;
+    ball.receiveShadow = false;
+    const ember = new THREE.PointLight(hostile ? 0xd6442f : 0xff863d, hostile ? 8 : 20, hostile ? 7 : 12, 2);
+    ember.userData.baseIntensity = hostile ? 8 : 20;
+    ball.add(ember);
+    scene.add(ball);
+    poolStats.cannonballsCreated += 1;
+  } else {
+    poolStats.cannonballsReused += 1;
+  }
+  ball.visible = true;
+  ball.position.set(0, 0, 0);
+  ball.rotation.set(0, 0, 0);
+  ball.scale.setScalar(1);
+  for (const child of ball.children) {
+    if (!child.isLight) continue;
+    child.visible = true;
+    child.intensity = child.userData.baseIntensity;
+  }
+  return ball;
+}
+
+function releaseCannonballMesh(ball) {
+  const type = ball.userData?.cannonballType;
+  if (!type) return;
+  ball.visible = false;
+  ball.position.set(0, -9999, 0);
+  for (const child of ball.children) {
+    if (child.isLight) child.visible = false;
+  }
+  cannonballPools[type].push(ball);
+  poolStats.cannonballsReleased += 1;
+}
+
 function fireCannon(owner, hostile = false) {
   if (owner === player && (!game.started || game.ended || game.cannonCooldown > 0)) return false;
   const activeBalls = cannonballs.length;
@@ -567,16 +657,8 @@ function fireCannon(owner, hostile = false) {
   if (hostile && sameSideBalls >= MAX_HOSTILE_CANNONBALLS) return false;
   if (!hostile && sameSideBalls >= MAX_FRIENDLY_CANNONBALLS) return false;
   const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(owner.quaternion).normalize();
-  const ball = mesh(
-    hostile ? particleGeometry.cannonHostile : particleGeometry.cannonFriendly,
-    cachedParticleMaterial(hostile ? 0xd6442f : 0xff7c35, 0.18, hostile ? 0.7 : 1.8),
-    scene,
-  );
+  const ball = acquireCannonballMesh(hostile);
   ball.position.copy(owner.position).addScaledVector(direction, 5).add(new THREE.Vector3(0, 2.2, 0));
-  if (!compactDevice) {
-    const ember = new THREE.PointLight(hostile ? 0xd6442f : 0xff863d, hostile ? 8 : 20, hostile ? 7 : 12, 2);
-    ball.add(ember);
-  }
   cannonballs.push({ object: ball, velocity: direction.multiplyScalar(hostile ? 25 : 39), hostile, life: 4, trailTimer: 0 });
   spawnMuzzleFlash(ball.position, direction, hostile);
   if (owner === player) {
@@ -647,7 +729,7 @@ function useUltimate() {
     const ball = cannonballs[i];
     if (!ball.hostile || ball.object.position.distanceTo(player.position) > 90) continue;
     spawnSplash(ball.object.position, 0x94f4ff, 10);
-    scene.remove(ball.object);
+    releaseCannonballMesh(ball.object);
     cannonballs.splice(i, 1);
   }
   return true;
@@ -663,8 +745,11 @@ function damage(amount, message) {
 }
 
 let dangerTimer;
+let dangerFlushTimer;
 let lastDangerAt = 0;
-function showDanger(text) {
+let pendingDangerText = '';
+
+function applyDangerText(text) {
   const now = performance.now();
   if (ui.danger.textContent !== text) ui.danger.textContent = text;
   if (!ui.danger.classList.contains('show') || now - lastDangerAt > 220) {
@@ -673,6 +758,21 @@ function showDanger(text) {
   lastDangerAt = now;
   clearTimeout(dangerTimer);
   dangerTimer = setTimeout(() => ui.danger.classList.remove('show'), 1600);
+}
+
+function showDanger(text) {
+  const now = performance.now();
+  const wait = 190 - (now - lastDangerAt);
+  if (wait > 0) {
+    pendingDangerText = text;
+    clearTimeout(dangerFlushTimer);
+    dangerFlushTimer = setTimeout(() => {
+      applyDangerText(pendingDangerText);
+      pendingDangerText = '';
+    }, wait);
+    return;
+  }
+  applyDangerText(text);
 }
 
 function expandMission(duration = 5000) {
@@ -809,8 +909,8 @@ function updateCannonballs(dt) {
     ball.trailTimer -= dt;
     ball.velocity.y -= 2.5 * dt;
     ball.object.position.addScaledVector(ball.velocity, dt);
-    if (ball.trailTimer <= 0 && particles.length < MAX_PARTICLES * (compactDevice ? 0.42 : 0.58)) {
-      ball.trailTimer = compactDevice ? (ball.hostile ? 0.32 : 0.36) : (ball.hostile ? 0.18 : 0.2);
+    if (ball.trailTimer <= 0 && particles.length < MAX_PARTICLES * 0.72) {
+      ball.trailTimer = ball.hostile ? 0.18 : 0.2;
       const trailColor = ball.hostile ? 0xbf3b32 : 0xffa45a;
       const life = ball.hostile ? 0.4 : 0.62;
       const baseScale = ball.hostile ? 0.11 : 0.16;
@@ -822,7 +922,7 @@ function updateCannonballs(dt) {
       );
       addParticle({ object: trail, velocity: new THREE.Vector3((Math.random() - 0.5) * 1.8, 0.6 + Math.random() * 1.4, (Math.random() - 0.5) * 1.8), life, maxLife: life, baseScale });
     } else if (ball.trailTimer <= 0) {
-      ball.trailTimer = compactDevice ? (ball.hostile ? 0.38 : 0.42) : (ball.hostile ? 0.22 : 0.24);
+      ball.trailTimer = ball.hostile ? 0.22 : 0.24;
     }
     if (ball.hostile && ball.object.position.distanceToSquared(player.position) < 14.44) {
       damage(14, '해적의 포격!');
@@ -842,7 +942,7 @@ function updateCannonballs(dt) {
     if (ball.object.position.y < 0 || ball.life <= 0) {
       spawnSplash(ball.object.position, ball.hostile ? 0xff7b64 : 0xffcf8a, ball.hostile ? 5 : 6);
       if (!ball.hostile) spawnExplosion(ball.object.position, 0.52, 4);
-      scene.remove(ball.object);
+      releaseCannonballMesh(ball.object);
       cannonballs.splice(i, 1);
     }
   }
@@ -876,11 +976,9 @@ function updateParticles(dt) {
         const lifeRatio = Math.max(0, particle.life / (particle.maxLife ?? 1));
         particle.object.scale.setScalar(Math.max(0.01, (particle.baseScale ?? 1) * lifeRatio));
       }
-      if (particle.object.material?.userData?.disposableParticleMaterial) particle.object.material.opacity = Math.max(0, particle.life / (particle.maxLife ?? 1));
     }
     if (particle.life <= 0) {
-      scene.remove(particle.object);
-      if (particle.object.material?.userData?.disposableParticleMaterial) particle.object.material.dispose();
+      releaseEffectObject(particle.object);
       particles.splice(i, 1);
     }
   }
@@ -959,6 +1057,7 @@ function updateSky(time) {
 }
 
 function animate() {
+  renderFrame += 1;
   const dt = Math.min(clock.getDelta(), 0.04);
   if (game.started && !game.ended) {
     game.time += dt;
@@ -976,12 +1075,15 @@ function animate() {
   updateCamera(dt);
   updateSky(game.time);
   updateHUD();
+  renderer.shadowMap.needsUpdate = renderFrame % SHADOW_UPDATE_INTERVAL === 0;
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
 
 async function resetGame() {
   Object.assign(game, { started: false, ended: false, speed: 0, heading: 0, health: 100, treasures: 0, score: 0, supplies: 0, time: 0, cannonCooldown: 0, hitCooldown: 0, ultimateCharge: 40 });
+  while (cannonballs.length) releaseCannonballMesh(cannonballs.pop().object);
+  while (particles.length) releaseEffectObject(particles.pop().object);
   player.position.set(0, 0.25, 32);
   player.rotation.set(0, 0, 0);
   islands.forEach((island) => { island.collected = false; island.beacon.visible = true; });
@@ -1092,6 +1194,47 @@ window.addEventListener('resize', resize);
 resize();
 camera.position.set(0, 18, 62);
 camera.lookAt(player.position);
+
+function prewarmRuntimeObjects() {
+  const offscreen = new THREE.Vector3(0, -9999, 0);
+  const prewarmMeshes = [
+    [particleGeometry.splash, cachedParticleMaterial(0xc9f4ff, 0.72), 32],
+    [particleGeometry.splash, cachedParticleMaterial(0xffcf8a, 0.72), 18],
+    [particleGeometry.splash, cachedParticleMaterial(0xbcecff, 0.72), 18],
+    [particleGeometry.splash, cachedParticleMaterial(0xff8a5c, 0.72), 12],
+    [particleGeometry.splash, cachedParticleMaterial(0xff7b64, 0.72), 12],
+    [particleGeometry.splash, cachedParticleMaterial(0x94f4ff, 0.72), 12],
+    [particleGeometry.splash, cachedParticleMaterial(0xffb66c, 0.72), 10],
+    [particleGeometry.splash, cachedParticleMaterial(0xd54e3b, 0.72), 10],
+    [particleGeometry.spark, cachedParticleMaterial(0xfff0a6, 0.45, 1.2, true), 20],
+    [particleGeometry.spark, cachedParticleMaterial(0xff9b43, 0.45, 1.2, true), 20],
+    [particleGeometry.spark, cachedParticleMaterial(0xe64f35, 0.45, 1.2, true), 20],
+    [particleGeometry.spark, cachedParticleMaterial(0x2f3740, 0.45, 0.2, true), 20],
+    [particleGeometry.trail, cachedParticleMaterial(0xffa45a, 0.55, 1.1, true), 24],
+    [particleGeometry.trail, cachedParticleMaterial(0xbf3b32, 0.55, 0.5, true), 24],
+    [particleGeometry.ring, cachedParticleMaterial(0xff673d, 0.3, 1.5, true), 8],
+    [particleGeometry.ring, cachedParticleMaterial(0xffe4a2, 0.3, 1.5, true), 8],
+    [particleGeometry.muzzle, cachedParticleMaterial(0xffb25a, 0.28, 2, true), 10],
+    [particleGeometry.muzzle, cachedParticleMaterial(0xe84d38, 0.28, 2, true), 10],
+  ];
+  for (const [geometry, mat, count] of prewarmMeshes) {
+    const objects = [];
+    for (let i = 0; i < count; i += 1) objects.push(particleMesh(geometry, mat, offscreen, 0.01));
+    for (const object of objects) releaseEffectObject(object);
+  }
+  const friendlyCannonballs = [];
+  const hostileCannonballs = [];
+  for (let i = 0; i < MAX_FRIENDLY_CANNONBALLS; i += 1) friendlyCannonballs.push(acquireCannonballMesh(false));
+  for (let i = 0; i < MAX_HOSTILE_CANNONBALLS; i += 1) hostileCannonballs.push(acquireCannonballMesh(true));
+  for (const ball of friendlyCannonballs) releaseCannonballMesh(ball);
+  for (const ball of hostileCannonballs) releaseCannonballMesh(ball);
+  const lights = [];
+  for (let i = 0; i < 14; i += 1) lights.push(effectLight(0xff9b45, 1, 1, 2, offscreen));
+  for (const light of lights) releaseEffectObject(light);
+}
+
+prewarmRuntimeObjects();
+renderer.compile(scene, camera);
 animate();
 
 window.__oceanVoyager = {
@@ -1099,7 +1242,29 @@ window.__oceanVoyager = {
   expandMission,
   get particleCount() { return particles.length; },
   get performanceProfile() {
-    return { compactDevice, pixelRatio: renderer.getPixelRatio(), shadows: renderer.shadowMap.enabled, shadowMapSize: sun.shadow.mapSize.x };
+    return {
+      compactDevice,
+      pixelRatio: renderer.getPixelRatio(),
+      pixelRatioCap,
+      shadows: renderer.shadowMap.enabled,
+      shadowAutoUpdate: renderer.shadowMap.autoUpdate,
+      shadowUpdateInterval: SHADOW_UPDATE_INTERVAL,
+      shadowMapSize: sun.shadow.mapSize.x,
+      antialias: renderer.getContext().getContextAttributes().antialias,
+      maxParticles: MAX_PARTICLES,
+      maxCannonballs: MAX_CANNONBALLS,
+      rendererInfo: {
+        memory: { ...renderer.info.memory },
+        render: { ...renderer.info.render },
+      },
+      pools: {
+        stats: { ...poolStats },
+        particles: [...particlePools.values()].reduce((sum, pool) => sum + pool.length, 0),
+        friendlyCannonballs: cannonballPools.friendly.length,
+        hostileCannonballs: cannonballPools.hostile.length,
+        lights: effectLightPool.length,
+      },
+    };
   },
   get audio() {
     return {
