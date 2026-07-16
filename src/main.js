@@ -57,6 +57,9 @@ const joystick = { x: 0, y: 0, active: false, pointerId: null };
 const MAX_CANNONBALLS = 44;
 const MAX_HOSTILE_CANNONBALLS = 26;
 const MAX_FRIENDLY_CANNONBALLS = 16;
+const PROJECTILE_LIGHT_BATCH_SIZE = MAX_CANNONBALLS;
+const PROJECTILE_LIGHT_LOCKED_SLOTS = 8;
+const EFFECT_LIGHT_BATCH_SIZE = 14;
 const ENEMY_CHASE_RANGE_SQ = 55 * 55;
 const ENEMY_FIRE_RANGE_SQ = 34 * 34;
 const ENEMY_STANDOFF_RANGE_SQ = 18 * 18;
@@ -73,11 +76,22 @@ const tempPatrolTarget = new THREE.Vector3();
 const tempCameraOffset = new THREE.Vector3();
 const tempCameraTarget = new THREE.Vector3();
 const tempCameraLook = new THREE.Vector3();
+const tempFireDirection = new THREE.Vector3();
+const tempParticlePosition = new THREE.Vector3();
+const cannonballLaunchOffset = new THREE.Vector3(0, 2.2, 0);
+const hiddenItemPosition = new THREE.Vector3(0, -9999, 0);
+const muzzleUpAxis = new THREE.Vector3(0, 1, 0);
 let audioContext;
 let musicGain;
+let cannonGain;
+let cannonSoundBuffer;
+let bgmStartPromise;
 let musicMuted = false;
 let lastCannonSoundAt = -1;
 let renderFrame = 0;
+let previousFrameCost = 0;
+let combatRenderWarmed = false;
+let shadowCooldownUntil = 0;
 const SHADOW_UPDATE_INTERVAL = 4;
 const bgmUrl = `${import.meta.env.BASE_URL}audio/ocean-voyager-commercial-bgm.mp3`;
 const bgm = new Audio(bgmUrl);
@@ -142,6 +156,36 @@ const hudState = {
   needle: '',
   heading: '',
 };
+const frameProfile = { records: [] };
+
+function countVisibleLights(lights) {
+  let count = 0;
+  for (const light of lights) {
+    if (light.visible && light.intensity > 0) count += 1;
+  }
+  return count;
+}
+
+function profiledStep(name, run) {
+  if (!globalThis.__OCEAN_PROFILE) {
+    run();
+    return;
+  }
+  const startedAt = performance.now();
+  run();
+  const cost = performance.now() - startedAt;
+  if (cost > 5) {
+    frameProfile.records.push({
+      name,
+      cost: Math.round(cost * 10) / 10,
+      particles: particles.length,
+      cannonballs: cannonballs.length,
+      effectLights: countVisibleLights(effectLightPool) + particles.reduce((count, particle) => count + (particle.object?.userData?.pooledEffectLight && particle.object.visible && particle.object.intensity > 0 ? 1 : 0), 0),
+      projectileLights: countVisibleLights(projectileLights),
+    });
+    if (frameProfile.records.length > 80) frameProfile.records.shift();
+  }
+}
 
 const particleGeometry = {
   splash: new THREE.SphereGeometry(1, 5, 5),
@@ -154,8 +198,11 @@ const particleGeometry = {
 };
 const particleMaterialCache = new Map();
 const particlePools = new Map();
+const particleStatePool = [];
+const cannonballStatePool = [];
 const cannonballPools = { friendly: [], hostile: [] };
 const effectLightPool = [];
+const projectileLights = [];
 const poolStats = {
   particlesCreated: 0,
   particlesReused: 0,
@@ -183,13 +230,25 @@ function cachedParticleMaterial(color, roughness = 0.55, emissiveIntensity = 0, 
   return particleMaterialCache.get(key);
 }
 
-function addParticle(particle) {
-  particle.maxLife ??= particle.life;
+function addParticle(object, velocityX, velocityY, velocityZ, life, baseScale, maxLife = life, expand = 0) {
+  const particle = particleStatePool.pop() ?? { velocity: new THREE.Vector3() };
+  particle.object = object;
+  particle.velocity.set(velocityX, velocityY, velocityZ);
+  particle.life = life;
+  particle.maxLife = maxLife;
+  particle.baseScale = baseScale;
+  particle.expand = expand;
   particles.push(particle);
   while (particles.length > MAX_PARTICLES) {
-    const expired = particles.shift();
-    if (expired?.object) releaseEffectObject(expired.object);
+    releaseParticleState(particles.shift());
   }
+}
+
+function releaseParticleState(particle) {
+  if (!particle?.object) return;
+  releaseEffectObject(particle.object);
+  particle.object = null;
+  particleStatePool.push(particle);
 }
 
 function scaledEffectCount(count) {
@@ -219,14 +278,9 @@ function particleMesh(geometry, mat, position, scale = 1, rotation = [0, 0, 0]) 
 }
 
 function effectLight(color, intensity, distance, decay, position) {
-  const light = effectLightPool.pop() ?? new THREE.PointLight(color, intensity, distance, decay);
-  if (!light.userData.pooledEffectLight) {
-    light.userData.pooledEffectLight = true;
-    scene.add(light);
-    poolStats.lightsCreated += 1;
-  } else {
-    poolStats.lightsReused += 1;
-  }
+  const light = effectLightPool.pop();
+  if (!light) return null;
+  poolStats.lightsReused += 1;
   light.color.setHex(color);
   light.intensity = intensity;
   light.distance = distance;
@@ -237,19 +291,61 @@ function effectLight(color, intensity, distance, decay, position) {
 }
 
 function releaseEffectObject(object) {
-  object.visible = false;
-  object.position.set(0, -9999, 0);
   if (object.userData?.pooledEffectLight) {
+    object.visible = false;
     object.intensity = 0;
+    object.position.copy(hiddenItemPosition);
     effectLightPool.push(object);
     poolStats.lightsReleased += 1;
     return;
   }
+  object.visible = false;
+  object.position.set(0, -9999, 0);
   const key = object.userData?.particlePoolKey;
   if (!key) return;
   if (!particlePools.has(key)) particlePools.set(key, []);
   particlePools.get(key).push(object);
   poolStats.particlesReleased += 1;
+}
+
+function initializeProjectileLights() {
+  for (let i = 0; i < PROJECTILE_LIGHT_BATCH_SIZE; i += 1) {
+    const light = new THREE.PointLight(0xff863d, 0, 12, 2);
+    light.visible = false;
+    light.position.copy(hiddenItemPosition);
+    scene.add(light);
+    projectileLights.push(light);
+  }
+}
+
+function initializeEffectLights() {
+  for (let i = 0; i < EFFECT_LIGHT_BATCH_SIZE; i += 1) {
+    const light = new THREE.PointLight(0xff9b45, 0, 28, 2);
+    light.userData.pooledEffectLight = true;
+    light.visible = false;
+    light.position.copy(hiddenItemPosition);
+    scene.add(light);
+    effectLightPool.push(light);
+    poolStats.lightsCreated += 1;
+  }
+}
+
+function syncProjectileLights() {
+  for (let i = 0; i < projectileLights.length; i += 1) {
+    const light = projectileLights[i];
+    const ball = cannonballs[i];
+    if (!ball?.object) {
+      light.visible = false;
+      light.intensity = 0;
+      light.position.copy(hiddenItemPosition);
+      continue;
+    }
+    light.visible = true;
+    light.color.setHex(ball.hostile ? 0xd6442f : 0xff863d);
+    light.intensity = ball.hostile ? 8 : 20;
+    light.distance = ball.hostile ? 7 : 12;
+    light.position.copy(ball.object.position);
+  }
 }
 
 const oceanGeo = new THREE.PlaneGeometry(650, 650, 40, 40);
@@ -446,6 +542,7 @@ function createMapItem(type, x, z, phase) {
     mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.7, 6), material(0xe2a24a), group, [0, 0.9, 0], [0.2, 0, 0.2]);
   }
   const light = new THREE.PointLight(glow, 11, 16, 2);
+  light.userData.baseIntensity = 11;
   light.position.y = 2;
   group.add(light);
   group.position.set(x, 2.2, z);
@@ -458,6 +555,17 @@ function createMapItem(type, x, z, phase) {
   ['repair', 95, 72], ['rum', -104, 28], ['chart', -42, 82], ['powder', 24, -112],
   ['repair', 54, 8], ['rum', -8, 92], ['chart', 112, -12], ['powder', -65, 10],
 ].forEach(([type, x, z], index) => createMapItem(type, x, z, index * 0.7));
+
+function setItemVisual(item, visible) {
+  item.group.visible = true;
+  item.group.position.copy(visible ? item.spawn : hiddenItemPosition);
+  item.group.traverse((child) => {
+    if (child.isLight) {
+      child.visible = visible;
+      child.intensity = visible ? child.userData.baseIntensity : 0;
+    }
+  });
+}
 
 function createStorm(x, z, radius) {
   const cloud = new THREE.Group();
@@ -485,8 +593,8 @@ function spawnSplash(position, color = 0xbcecff, count = 10) {
   const actualCount = scaledEffectCount(count);
   for (let i = 0; i < actualCount; i += 1) {
     const life = 0.8 + Math.random() * 0.6;
-    const drop = particleMesh(particleGeometry.splash, mat, new THREE.Vector3(position.x, 0.4, position.z), 0.08 + Math.random() * 0.12);
-    addParticle({ object: drop, velocity: new THREE.Vector3((Math.random() - 0.5) * 5, 2 + Math.random() * 4, (Math.random() - 0.5) * 5), life, maxLife: life, baseScale: drop.scale.x });
+    const drop = particleMesh(particleGeometry.splash, mat, tempParticlePosition.set(position.x, 0.4, position.z), 0.08 + Math.random() * 0.12);
+    addParticle(drop, (Math.random() - 0.5) * 5, 2 + Math.random() * 4, (Math.random() - 0.5) * 5, life, drop.scale.x);
   }
 }
 
@@ -506,26 +614,20 @@ function spawnExplosion(position, radius = 1, count = 24) {
     );
     const angle = Math.random() * Math.PI * 2;
     const force = (5 + Math.random() * 11) * radius;
-    addParticle({
-      object: spark,
-      velocity: new THREE.Vector3(Math.cos(angle) * force, 4 + Math.random() * 8, Math.sin(angle) * force),
-      life: 0.75 + Math.random() * 0.8,
-      maxLife: 1.35,
-      baseScale,
-    });
+    addParticle(spark, Math.cos(angle) * force, 4 + Math.random() * 8, Math.sin(angle) * force, 0.75 + Math.random() * 0.8, baseScale, 1.35);
   }
   for (let i = 0; i < 2; i += 1) {
     const ring = particleMesh(
       particleGeometry.ring,
       cachedParticleMaterial(i ? 0xffe4a2 : 0xff673d, 0.3, 1.5, true),
-      new THREE.Vector3(burst.x, 0.45 + i * 0.25, burst.z),
+      tempParticlePosition.set(burst.x, 0.45 + i * 0.25, burst.z),
       radius * (1.5 + i * 0.8),
       [Math.PI / 2, 0, 0],
     );
-    addParticle({ object: ring, velocity: new THREE.Vector3(0, 0.25, 0), life: 0.7, maxLife: 0.7, expand: 1.9 + i * 0.7 });
+    addParticle(ring, 0, 0.25, 0, 0.7, ring.scale.x, 0.7, 1.9 + i * 0.7);
   }
   const light = effectLight(0xff9b45, 45 * radius, 28 * radius, 2, burst);
-  addParticle({ object: light, velocity: new THREE.Vector3(), life: 0.32, maxLife: 0.32 });
+  if (light) addParticle(light, 0, 0, 0, 0.32, 1);
 }
 
 function spawnMuzzleFlash(position, direction, hostile = false) {
@@ -533,11 +635,11 @@ function spawnMuzzleFlash(position, direction, hostile = false) {
   const flash = particleMesh(
     particleGeometry.muzzle,
     cachedParticleMaterial(flashColor, 0.28, 2, true),
-    new THREE.Vector3(position.x, position.y, position.z),
+    tempParticlePosition.set(position.x, position.y, position.z),
   );
-  flash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
+  flash.quaternion.setFromUnitVectors(muzzleUpAxis, direction);
   flash.position.addScaledVector(direction, 1.3);
-  addParticle({ object: flash, velocity: direction.clone().multiplyScalar(5), life: 0.16, maxLife: 0.16 });
+  addParticle(flash, direction.x * 5, direction.y * 5, direction.z * 5, 0.16, flash.scale.x);
   spawnSplash(position, hostile ? 0xd54e3b : 0xffb66c, compactDevice ? 1 : 2);
 }
 
@@ -571,19 +673,47 @@ function playDrum(frequency, duration, volume = 0.08, delay = 0) {
   oscillator.stop(start + duration + 0.03);
 }
 
+function ensureCannonSoundBuffer() {
+  if (cannonSoundBuffer || !audioContext) return;
+  const duration = 0.25;
+  const sampleRate = audioContext.sampleRate;
+  const buffer = audioContext.createBuffer(1, Math.ceil(sampleRate * duration), sampleRate);
+  const data = buffer.getChannelData(0);
+  let phase = 0;
+  for (let i = 0; i < data.length; i += 1) {
+    const t = i / sampleRate;
+    const progress = t / duration;
+    const frequency = 90 * (30 / 90) ** progress;
+    phase += (frequency / sampleRate) * Math.PI * 2;
+    const saw = ((phase / Math.PI) % 2) - 1;
+    data[i] = saw * 0.11 * (1 - progress) ** 2.4;
+  }
+  cannonSoundBuffer = buffer;
+}
+
 async function startAudio() {
   audioContext ??= new AudioContext();
   musicGain ??= audioContext.createGain();
+  cannonGain ??= audioContext.createGain();
   if (!musicGain.__connected) {
     musicGain.gain.value = 1;
     musicGain.connect(audioContext.destination);
     musicGain.__connected = true;
   }
+  if (!cannonGain.__connected) {
+    cannonGain.gain.value = 1;
+    cannonGain.connect(audioContext.destination);
+    cannonGain.__connected = true;
+  }
+  ensureCannonSoundBuffer();
   if (audioContext.state !== 'running') await audioContext.resume();
   if (!musicMuted) {
-    await bgmReady;
     bgm.muted = false;
-    await bgm.play();
+    bgmStartPromise ??= bgmReady
+      .then(() => bgm.play())
+      .catch(() => {
+        bgmStartPromise = null;
+      });
   }
   ui.audioToggle.textContent = '♫';
   ui.audioToggle.classList.remove('muted');
@@ -594,16 +724,12 @@ function playCannonSound() {
   if (!audioContext || musicMuted) return;
   if (audioContext.currentTime - lastCannonSoundAt < 0.12) return;
   lastCannonSoundAt = audioContext.currentTime;
-  const oscillator = audioContext.createOscillator();
-  const gain = audioContext.createGain();
-  oscillator.type = 'sawtooth';
-  oscillator.frequency.setValueAtTime(90, audioContext.currentTime);
-  oscillator.frequency.exponentialRampToValueAtTime(30, audioContext.currentTime + 0.22);
-  gain.gain.setValueAtTime(0.11, audioContext.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.24);
-  oscillator.connect(gain).connect(audioContext.destination);
-  oscillator.start();
-  oscillator.stop(audioContext.currentTime + 0.25);
+  ensureCannonSoundBuffer();
+  if (!cannonSoundBuffer) return;
+  const source = audioContext.createBufferSource();
+  source.buffer = cannonSoundBuffer;
+  source.connect(cannonGain ?? audioContext.destination);
+  source.start();
 }
 
 function acquireCannonballMesh(hostile) {
@@ -619,6 +745,8 @@ function acquireCannonballMesh(hostile) {
     ball.receiveShadow = false;
     const ember = new THREE.PointLight(hostile ? 0xd6442f : 0xff863d, hostile ? 8 : 20, hostile ? 7 : 12, 2);
     ember.userData.baseIntensity = hostile ? 8 : 20;
+    ember.visible = false;
+    ember.intensity = 0;
     ball.add(ember);
     scene.add(ball);
     poolStats.cannonballsCreated += 1;
@@ -631,8 +759,8 @@ function acquireCannonballMesh(hostile) {
   ball.scale.setScalar(1);
   for (const child of ball.children) {
     if (!child.isLight) continue;
-    child.visible = true;
-    child.intensity = child.userData.baseIntensity;
+    child.visible = false;
+    child.intensity = 0;
   }
   return ball;
 }
@@ -643,7 +771,10 @@ function releaseCannonballMesh(ball) {
   ball.visible = false;
   ball.position.set(0, -9999, 0);
   for (const child of ball.children) {
-    if (child.isLight) child.visible = false;
+    if (child.isLight) {
+      child.visible = false;
+      child.intensity = 0;
+    }
   }
   cannonballPools[type].push(ball);
   poolStats.cannonballsReleased += 1;
@@ -656,10 +787,16 @@ function fireCannon(owner, hostile = false) {
   if (activeBalls >= MAX_CANNONBALLS) return false;
   if (hostile && sameSideBalls >= MAX_HOSTILE_CANNONBALLS) return false;
   if (!hostile && sameSideBalls >= MAX_FRIENDLY_CANNONBALLS) return false;
-  const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(owner.quaternion).normalize();
+  const direction = tempFireDirection.copy(forwardAxis).applyQuaternion(owner.quaternion).normalize();
   const ball = acquireCannonballMesh(hostile);
-  ball.position.copy(owner.position).addScaledVector(direction, 5).add(new THREE.Vector3(0, 2.2, 0));
-  cannonballs.push({ object: ball, velocity: direction.multiplyScalar(hostile ? 25 : 39), hostile, life: 4, trailTimer: 0 });
+  ball.position.copy(owner.position).addScaledVector(direction, 5).add(cannonballLaunchOffset);
+  const shot = cannonballStatePool.pop() ?? { velocity: new THREE.Vector3() };
+  shot.object = ball;
+  shot.velocity.copy(direction).multiplyScalar(hostile ? 25 : 39);
+  shot.hostile = hostile;
+  shot.life = 4;
+  shot.trailTimer = 0;
+  cannonballs.push(shot);
   spawnMuzzleFlash(ball.position, direction, hostile);
   if (owner === player) {
     game.cannonCooldown = game.supplies > 0 ? 0.28 : 0.45;
@@ -670,7 +807,8 @@ function fireCannon(owner, hostile = false) {
 
 function collectItem(item) {
   item.collected = true;
-  item.group.visible = false;
+  setItemVisual(item, false);
+  shadowCooldownUntil = Math.max(shadowCooldownUntil, game.time + 1.4);
   // Keep pickup work allocation-free on the render frame. Creating a temporary
   // dispatch object and first-use 3D particles caused visible mobile frame spikes.
   if (item.type === 'repair') {
@@ -701,7 +839,8 @@ function sinkEnemy(enemy, reward = true) {
   enemy.ship.visible = false;
   game.score += 500;
   if (reward) chargeUltimate(18);
-  spawnExplosion(enemy.ship.position, 1.35, 18);
+  const sinkPosition = enemy.ship.position.clone();
+  requestAnimationFrame(() => spawnExplosion(sinkPosition, 1.35, 18));
   showDanger('해적선 격침!');
 }
 
@@ -730,6 +869,8 @@ function useUltimate() {
     if (!ball.hostile || ball.object.position.distanceTo(player.position) > 90) continue;
     spawnSplash(ball.object.position, 0x94f4ff, 10);
     releaseCannonballMesh(ball.object);
+    ball.object = null;
+    cannonballStatePool.push(ball);
     cannonballs.splice(i, 1);
   }
   return true;
@@ -920,7 +1061,7 @@ function updateCannonballs(dt) {
         ball.object.position,
         baseScale,
       );
-      addParticle({ object: trail, velocity: new THREE.Vector3((Math.random() - 0.5) * 1.8, 0.6 + Math.random() * 1.4, (Math.random() - 0.5) * 1.8), life, maxLife: life, baseScale });
+      addParticle(trail, (Math.random() - 0.5) * 1.8, 0.6 + Math.random() * 1.4, (Math.random() - 0.5) * 1.8, life, baseScale);
     } else if (ball.trailTimer <= 0) {
       ball.trailTimer = ball.hostile ? 0.22 : 0.24;
     }
@@ -943,6 +1084,8 @@ function updateCannonballs(dt) {
       spawnSplash(ball.object.position, ball.hostile ? 0xff7b64 : 0xffcf8a, ball.hostile ? 5 : 6);
       if (!ball.hostile) spawnExplosion(ball.object.position, 0.52, 4);
       releaseCannonballMesh(ball.object);
+      ball.object = null;
+      cannonballStatePool.push(ball);
       cannonballs.splice(i, 1);
     }
   }
@@ -978,7 +1121,7 @@ function updateParticles(dt) {
       }
     }
     if (particle.life <= 0) {
-      releaseEffectObject(particle.object);
+      releaseParticleState(particle);
       particles.splice(i, 1);
     }
   }
@@ -1056,7 +1199,117 @@ function updateSky(time) {
   sun.intensity = 1 + dayCycle * 2.2;
 }
 
+async function warmCombatRenderVariants() {
+  if (combatRenderWarmed) return;
+  combatRenderWarmed = true;
+  const warmPosition = player.position.clone();
+  const offscreen = hiddenItemPosition;
+  const warmParticles = [];
+  const warmCannonballs = [];
+  const warmLights = [];
+  const particlePlan = [
+    [particleGeometry.splash, cachedParticleMaterial(0xffcf8a, 0.72), 12, 0.12],
+    [particleGeometry.trail, cachedParticleMaterial(0xffa45a, 0.55, 1.1, true), 12, 0.16],
+    [particleGeometry.spark, cachedParticleMaterial(0xff9b43, 0.45, 1.2, true), 12, 0.16],
+    [particleGeometry.ring, cachedParticleMaterial(0xff673d, 0.3, 1.5, true), 4, 0.8],
+    [particleGeometry.muzzle, cachedParticleMaterial(0xffb25a, 0.28, 2, true), 4, 1],
+  ];
+
+  for (const [geometry, mat, count, scale] of particlePlan) {
+    for (let i = 0; i < count; i += 1) {
+      warmParticles.push(particleMesh(
+        geometry,
+        mat,
+        tempParticlePosition.set(warmPosition.x + (i % 6) * 0.1, warmPosition.y + 1 + (i % 3) * 0.08, warmPosition.z - (i % 8) * 0.1),
+        scale,
+      ));
+    }
+  }
+  for (let i = 0; i < 5; i += 1) {
+    const ball = acquireCannonballMesh(false);
+    ball.position.set(warmPosition.x + i, warmPosition.y + 2, warmPosition.z - 4 - i);
+    warmCannonballs.push(ball);
+  }
+  for (let i = 0; i < 2; i += 1) {
+    const light = effectLight(0xff9b45, 45, 28, 2, tempParticlePosition.set(warmPosition.x + i, warmPosition.y + 2, warmPosition.z - i));
+    if (light) warmLights.push(light);
+  }
+
+  const setWarmState = (particleCount, cannonballCount, lightCount) => {
+    warmParticles.forEach((object, index) => {
+      object.visible = index < particleCount;
+      object.position.copy(index < particleCount ? warmPosition : offscreen);
+    });
+    warmCannonballs.forEach((ball, index) => {
+      const active = index < cannonballCount;
+      ball.visible = active;
+      ball.position.copy(active ? warmPosition : offscreen);
+      for (const child of ball.children) {
+        if (!child.isLight) continue;
+        child.visible = false;
+        child.intensity = 0;
+      }
+    });
+    projectileLights.forEach((light, index) => {
+      const active = index < cannonballCount;
+      light.visible = active;
+      light.intensity = active ? 20 : 0;
+      light.distance = 12;
+      light.position.copy(active ? warmPosition : offscreen);
+    });
+    warmLights.forEach((light, index) => {
+      const active = index < lightCount;
+      light.visible = active;
+      light.intensity = active ? 45 : 0;
+      light.position.copy(active ? warmPosition : offscreen);
+    });
+  };
+
+  const variants = [
+    [0, PROJECTILE_LIGHT_LOCKED_SLOTS, 0],
+    [6, 2, 1],
+    [13, 4, 2],
+    [44, 5, 2],
+  ];
+  for (const [particleCount, cannonballCount, lightCount] of variants) {
+    setWarmState(particleCount, cannonballCount, lightCount);
+    renderer.compile(scene, camera);
+    renderer.render(scene, camera);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+
+  for (const object of warmParticles) releaseEffectObject(object);
+  for (const ball of warmCannonballs) releaseCannonballMesh(ball);
+  for (const light of warmLights) releaseEffectObject(light);
+
+  for (let i = 0; i < PROJECTILE_LIGHT_LOCKED_SLOTS; i += 1) {
+    const light = projectileLights[i];
+    light.visible = true;
+    light.intensity = 20;
+    light.distance = 12;
+    light.position.copy(warmPosition);
+  }
+  spawnMuzzleFlash(warmPosition, forwardAxis, false);
+  spawnMuzzleFlash(warmPosition, forwardAxis, true);
+  spawnExplosion(warmPosition, 0.52, 4);
+  spawnExplosion(warmPosition, 1.05, 12);
+  spawnExplosion(warmPosition, 1.05, 12);
+  spawnExplosion(warmPosition, 1.05, 12);
+  spawnExplosion(warmPosition, 1.05, 12);
+  renderer.compile(scene, camera);
+  renderer.render(scene, camera);
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  while (particles.length) releaseParticleState(particles.pop());
+
+  projectileLights.forEach((light) => {
+    light.visible = false;
+    light.intensity = 0;
+    light.position.copy(offscreen);
+  });
+}
+
 function animate() {
+  const frameStartedAt = performance.now();
   renderFrame += 1;
   const dt = Math.min(clock.getDelta(), 0.04);
   if (game.started && !game.ended) {
@@ -1065,33 +1318,45 @@ function animate() {
     game.hitCooldown = Math.max(0, game.hitCooldown - dt);
     game.score += dt * Math.max(0, game.speed) * 0.55;
     if (keys.has('Space')) fireCannon(player);
-    updatePlayer(dt, game.time);
-    updateEnemies(dt, game.time);
-    updateCannonballs(dt);
-    updateStorms(dt, game.time);
+    profiledStep('player', () => updatePlayer(dt, game.time));
+    profiledStep('enemies', () => updateEnemies(dt, game.time));
+    profiledStep('cannonballs', () => updateCannonballs(dt));
+    profiledStep('storms', () => updateStorms(dt, game.time));
   }
-  updateOcean(game.time);
-  updateParticles(dt);
-  updateCamera(dt);
-  updateSky(game.time);
-  updateHUD();
-  renderer.shadowMap.needsUpdate = renderFrame % SHADOW_UPDATE_INTERVAL === 0;
-  renderer.render(scene, camera);
+  profiledStep('ocean', () => updateOcean(game.time));
+  profiledStep('particles', () => updateParticles(dt));
+  profiledStep('projectile-lights', syncProjectileLights);
+  profiledStep('camera', () => updateCamera(dt));
+  profiledStep('sky', () => updateSky(game.time));
+  profiledStep('hud', updateHUD);
+  const transientEffectsActive = cannonballs.length > 0 || particles.length > 0;
+  const shadowFrame = renderFrame % SHADOW_UPDATE_INTERVAL === 0;
+  renderer.shadowMap.needsUpdate = !transientEffectsActive && shadowFrame && previousFrameCost < 45 && game.time >= shadowCooldownUntil;
+  profiledStep('render', () => renderer.render(scene, camera));
+  previousFrameCost = performance.now() - frameStartedAt;
   requestAnimationFrame(animate);
 }
 
 async function resetGame() {
   Object.assign(game, { started: false, ended: false, speed: 0, heading: 0, health: 100, treasures: 0, score: 0, supplies: 0, time: 0, cannonCooldown: 0, hitCooldown: 0, ultimateCharge: 40 });
-  while (cannonballs.length) releaseCannonballMesh(cannonballs.pop().object);
-  while (particles.length) releaseEffectObject(particles.pop().object);
+  while (cannonballs.length) {
+    const ball = cannonballs.pop();
+    releaseCannonballMesh(ball.object);
+    ball.object = null;
+    cannonballStatePool.push(ball);
+  }
+  while (particles.length) releaseParticleState(particles.pop());
   player.position.set(0, 0.25, 32);
   player.rotation.set(0, 0, 0);
   islands.forEach((island) => { island.collected = false; island.beacon.visible = true; });
   enemies.forEach((enemy) => { enemy.active = true; enemy.health = enemy.maxHealth; enemy.ship.visible = true; enemy.ship.position.copy(enemy.spawn); });
-  items.forEach((item) => { item.collected = false; item.group.visible = true; item.group.position.copy(item.spawn); });
+  items.forEach((item) => {
+    item.collected = false;
+    item.group.position.copy(item.spawn);
+    setItemVisual(item, true);
+  });
   ui.missionTitle.textContent = '잃어버린 왕관의 보물 5개를 찾으십시오';
   ui.missionDetail.textContent = '빛나는 섬 가까이 항해하면 보물을 발견할 수 있습니다.';
-  expandMission();
   ui.endScreen.classList.add('hidden');
   bgm.currentTime = 0;
   showDanger('항해 준비 중 — 음악을 불러옵니다');
@@ -1100,6 +1365,8 @@ async function resetGame() {
   } catch {
     showDanger('소리 버튼을 눌러 음악을 시작하세요');
   }
+  await warmCombatRenderVariants();
+  expandMission();
   game.started = true;
   ui.startScreen.classList.add('hidden');
   showDanger('돛을 올려라 — 항해 시작!');
@@ -1179,7 +1446,10 @@ ui.audioToggle.addEventListener('click', () => {
   ui.audioToggle.textContent = musicMuted ? '♩' : '♫';
   ui.audioToggle.setAttribute('aria-pressed', String(musicMuted));
   ui.audioToggle.setAttribute('aria-label', musicMuted ? '배경 음악 켜기' : '배경 음악 끄기');
-  if (musicMuted) bgm.pause();
+  if (musicMuted) {
+    bgm.pause();
+    bgmStartPromise = null;
+  }
   if (!musicMuted) startAudio().catch(() => {});
 });
 
@@ -1194,8 +1464,11 @@ window.addEventListener('resize', resize);
 resize();
 camera.position.set(0, 18, 62);
 camera.lookAt(player.position);
+initializeProjectileLights();
+initializeEffectLights();
 
 function prewarmRuntimeObjects() {
+  const compilePosition = player.position.clone();
   const offscreen = new THREE.Vector3(0, -9999, 0);
   const prewarmMeshes = [
     [particleGeometry.splash, cachedParticleMaterial(0xc9f4ff, 0.72), 32],
@@ -1217,24 +1490,105 @@ function prewarmRuntimeObjects() {
     [particleGeometry.muzzle, cachedParticleMaterial(0xffb25a, 0.28, 2, true), 10],
     [particleGeometry.muzzle, cachedParticleMaterial(0xe84d38, 0.28, 2, true), 10],
   ];
+
+  const compileSamples = [];
+  for (let i = particleStatePool.length; i < MAX_PARTICLES; i += 1) {
+    particleStatePool.push({ velocity: new THREE.Vector3() });
+  }
+  for (let i = cannonballStatePool.length; i < MAX_CANNONBALLS; i += 1) {
+    cannonballStatePool.push({ velocity: new THREE.Vector3() });
+  }
   for (const [geometry, mat, count] of prewarmMeshes) {
-    const objects = [];
-    for (let i = 0; i < count; i += 1) objects.push(particleMesh(geometry, mat, offscreen, 0.01));
-    for (const object of objects) releaseEffectObject(object);
+    const sample = particleMesh(geometry, mat, compilePosition, 0.01);
+    compileSamples.push(sample);
+    for (let i = 1; i < count; i += 1) {
+      const pooled = particleMesh(geometry, mat, offscreen, 0.01);
+      releaseEffectObject(pooled);
+    }
   }
   const friendlyCannonballs = [];
   const hostileCannonballs = [];
-  for (let i = 0; i < MAX_FRIENDLY_CANNONBALLS; i += 1) friendlyCannonballs.push(acquireCannonballMesh(false));
-  for (let i = 0; i < MAX_HOSTILE_CANNONBALLS; i += 1) hostileCannonballs.push(acquireCannonballMesh(true));
+  const burstLights = [];
+  for (let i = 0; i < MAX_FRIENDLY_CANNONBALLS; i += 1) {
+    const ball = acquireCannonballMesh(false);
+    ball.position.copy(i < 2 ? compilePosition : offscreen);
+    friendlyCannonballs.push(ball);
+  }
+  for (let i = 0; i < MAX_HOSTILE_CANNONBALLS; i += 1) {
+    const ball = acquireCannonballMesh(true);
+    ball.position.copy(i < 2 ? compilePosition : offscreen);
+    hostileCannonballs.push(ball);
+  }
+  for (let i = 0; i < 14; i += 1) {
+    const light = effectLight(0xff9b45, i < 4 ? 0.01 : 0, 1, 2, i < 4 ? compilePosition : offscreen);
+    if (!light) continue;
+    light.visible = i < 4;
+    burstLights.push(light);
+  }
+  const setCannonballCompileState = (ball, active) => {
+    ball.visible = active;
+    ball.position.copy(active ? compilePosition : offscreen);
+    for (const child of ball.children) {
+      if (!child.isLight) continue;
+      child.visible = false;
+      child.intensity = 0;
+    }
+  };
+  const compileLightVariant = (friendlyCount, hostileCount, burstCount, warmShadow = false) => {
+    friendlyCannonballs.forEach((ball, index) => setCannonballCompileState(ball, index < friendlyCount));
+    hostileCannonballs.forEach((ball, index) => setCannonballCompileState(ball, index < hostileCount));
+    projectileLights.forEach((light, index) => {
+      const active = index < friendlyCount + hostileCount;
+      light.visible = active;
+      light.intensity = active ? 20 : 0;
+      light.distance = 12;
+      light.position.copy(active ? compilePosition : offscreen);
+    });
+    burstLights.forEach((light, index) => {
+      const active = index < burstCount;
+      light.visible = active;
+      light.intensity = active ? 0.01 : 0;
+      light.position.copy(active ? compilePosition : offscreen);
+    });
+    renderer.compile(scene, camera);
+    if (warmShadow) {
+      renderer.shadowMap.needsUpdate = true;
+      renderer.render(scene, camera);
+    }
+  };
+  compileLightVariant(0, 0, 0);
+  compileLightVariant(1, 0, 0, true);
+  compileLightVariant(2, 0, 1, true);
+  compileLightVariant(1, 1, 1, true);
+  compileLightVariant(4, 0, 2, true);
+  compileLightVariant(6, 0, 3, true);
+  compileLightVariant(8, 0, 4, true);
+  compileLightVariant(4, 4, 4, true);
+  compileLightVariant(2, 2, 8, true);
+  compileLightVariant(MAX_FRIENDLY_CANNONBALLS, MAX_HOSTILE_CANNONBALLS, 4, true);
+  compileLightVariant(0, 0, 0, true);
+
+  for (let hiddenItems = 0; hiddenItems <= items.length; hiddenItems += 1) {
+    items.forEach((item, index) => setItemVisual(item, index >= hiddenItems));
+    renderer.compile(scene, camera);
+    renderer.render(scene, camera);
+  }
+  items.forEach((item) => setItemVisual(item, true));
+
+  for (const object of compileSamples) releaseEffectObject(object);
   for (const ball of friendlyCannonballs) releaseCannonballMesh(ball);
   for (const ball of hostileCannonballs) releaseCannonballMesh(ball);
-  const lights = [];
-  for (let i = 0; i < 14; i += 1) lights.push(effectLight(0xff9b45, 1, 1, 2, offscreen));
-  for (const light of lights) releaseEffectObject(light);
+  for (const light of burstLights) releaseEffectObject(light);
+  projectileLights.forEach((light) => {
+    light.visible = false;
+    light.intensity = 0;
+    light.position.copy(offscreen);
+  });
+  renderer.shadowMap.needsUpdate = true;
+  renderer.render(scene, camera);
 }
 
 prewarmRuntimeObjects();
-renderer.compile(scene, camera);
 animate();
 
 window.__oceanVoyager = {
@@ -1249,10 +1603,14 @@ window.__oceanVoyager = {
       shadows: renderer.shadowMap.enabled,
       shadowAutoUpdate: renderer.shadowMap.autoUpdate,
       shadowUpdateInterval: SHADOW_UPDATE_INTERVAL,
+      adaptiveShadowTimeSlicing: true,
       shadowMapSize: sun.shadow.mapSize.x,
       antialias: renderer.getContext().getContextAttributes().antialias,
       maxParticles: MAX_PARTICLES,
       maxCannonballs: MAX_CANNONBALLS,
+      projectileLightBatchSize: PROJECTILE_LIGHT_BATCH_SIZE,
+      projectileLightLockedSlots: PROJECTILE_LIGHT_LOCKED_SLOTS,
+      effectLightBatchSize: EFFECT_LIGHT_BATCH_SIZE,
       rendererInfo: {
         memory: { ...renderer.info.memory },
         render: { ...renderer.info.render },
@@ -1264,6 +1622,7 @@ window.__oceanVoyager = {
         hostileCannonballs: cannonballPools.hostile.length,
         lights: effectLightPool.length,
       },
+      frameProfile: frameProfile.records.slice(-80),
     };
   },
   get audio() {

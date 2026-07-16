@@ -13,7 +13,7 @@ try {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
-  await page.goto('http://localhost:4173/OceanVoyager3D/', { waitUntil: 'networkidle0' });
+  await page.goto('http://localhost:4173/OceanVoyager3D/', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__oceanVoyager?.player);
 
   const before = await page.evaluate(() => ({
@@ -32,6 +32,7 @@ try {
   }
 
   await page.click('#start-button');
+  await page.waitForFunction(() => window.__oceanVoyager.game.started && window.__oceanVoyager.audio.context === 'running');
   const enemyPositionsBefore = await page.evaluate(() => window.__oceanVoyager.enemies.map((enemy) => ({
     x: enemy.ship.position.x,
     z: enemy.ship.position.z,

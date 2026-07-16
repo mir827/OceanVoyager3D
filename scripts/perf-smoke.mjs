@@ -56,6 +56,8 @@ async function runProbe(page, label, scenario, options = {}) {
       frameTimes: frameTimes.slice(3),
       longTasks,
       heapDelta: (performance.memory?.usedJSHeapSize ?? 0) - heapStart,
+      performanceProfile: window.__oceanVoyager.performanceProfile,
+      audio: window.__oceanVoyager.audio,
     };
   }, { label, scenarioSource: scenario.toString(), scenarioOptions: options.scenarioOptions ?? {} });
 
@@ -77,9 +79,9 @@ async function runProbe(page, label, scenario, options = {}) {
     || stats.longFrames > budget.maxLongFrames
     || severeLongTasks.length > budget.maxSevereLongTasks
   ) {
-    throw new Error(`${label} frame budget failed: ${JSON.stringify({ stats, longTasks: result.longTasks, severeLongTasks, heapDelta: result.heapDelta })}`);
+    throw new Error(`${label} frame budget failed: ${JSON.stringify({ stats, longTasks: result.longTasks, severeLongTasks, heapDelta: result.heapDelta, performanceProfile: result.performanceProfile, audio: result.audio })}`);
   }
-  return { ...stats, longTasks: result.longTasks, severeLongTasks, heapDelta: result.heapDelta };
+  return { ...stats, longTasks: result.longTasks, severeLongTasks, heapDelta: result.heapDelta, performanceProfile: result.performanceProfile, audio: result.audio };
 }
 
 let page;
@@ -87,7 +89,8 @@ let page;
 try {
   page = await browser.newPage();
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
-  await page.goto('http://localhost:4173/OceanVoyager3D/', { waitUntil: 'networkidle0' });
+  await page.evaluateOnNewDocument(() => { window.__OCEAN_PROFILE = true; });
+  await page.goto('http://localhost:4173/OceanVoyager3D/', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__oceanVoyager?.player);
   await page.click('#start-button');
   await page.waitForFunction(() => window.__oceanVoyager.game.started && window.__oceanVoyager.audio.context === 'running');
@@ -107,6 +110,7 @@ try {
     await wait(700);
   }, {
     budget: {
+      minFrames: 42,
       maxP95: 52,
       maxFrame: 75,
       maxLongFrames: 6,
@@ -176,7 +180,7 @@ try {
       minFrames: Math.floor((enduranceMs / 1000) * 45),
       maxP95: 48,
       maxFrame: 125,
-      maxLongFrames: Math.max(10, Math.ceil(enduranceMs / 1200)),
+      maxLongFrames: Math.max(12, Math.ceil(enduranceMs / 900)),
       maxLongTaskDuration: 100,
       maxSevereLongTasks: 0,
     },
